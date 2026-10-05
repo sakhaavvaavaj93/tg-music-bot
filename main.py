@@ -35,16 +35,13 @@ from pyrogram import Client
 # ============================================================
 
 logging.basicConfig(
-    level=getattr(config.log_level, config.log_level),
+    level=getattr(logging, config.log_level.upper(), logging.INFO),
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
     handlers=[
         logging.FileHandler(config.log_file),
         logging.StreamHandler(sys.stdout)
     ]
 )
-
-logger = logging.getLogger(__name__)
-
 
 # ============================================================
 # PLATFORM INFORMATION
