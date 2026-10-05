@@ -62,26 +62,37 @@ if VOICE_CHAT_AVAILABLE:
     try:
         from pytgcalls import PyTgCalls as _PyTgCalls
         from pytgcalls.types import Update as _Update
-        from pytgcalls.types.stream import AudioVideoPiped as _AudioVideoPiped, AudioPiped as _AudioPiped
-        from pytgcalls.exceptions import NoActiveGroupCall as _NoActiveGroupCall, GroupCallNotFound as _GroupCallNotFound
-        
+        from pytgcalls.types.stream import (
+            AudioVideoPiped as _AudioVideoPiped,
+            AudioPiped as _AudioPiped
+        )
+        from pytgcalls.exceptions import (
+            NoActiveGroupCall as _NoActiveGroupCall,
+            GroupCallNotFound as _GroupCallNotFound
+        )
+
         PyTgCalls = _PyTgCalls
         Update = _Update
         AudioVideoPiped = _AudioVideoPiped
         AudioPiped = _AudioPiped
         NoActiveGroupCall = _NoActiveGroupCall
         GroupCallNotFound = _GroupCallNotFound
-        
-    except ImportError as e:
+
+    except Exception as e:
+        print("❌ PyTgCalls import failed!")
+        print(f"❌ Error type: {type(e).__name__}")
+        print(f"❌ Error: {e}")
+
         VOICE_CHAT_AVAILABLE = False
         _missing = _DummyType("pytgcalls", e)
+
         PyTgCalls = _missing
         Update = _missing
         AudioVideoPiped = _missing
         AudioPiped = _missing
         NoActiveGroupCall = _missing
         GroupCallNotFound = _missing
-
+        
 # Try to import psutil (optional, for system stats)
 psutil = None
 HAS_PSUTIL = False
