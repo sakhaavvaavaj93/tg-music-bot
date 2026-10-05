@@ -43,6 +43,9 @@ logging.basicConfig(
     ]
 )
 
+logger = logging.getLogger(__name__)
+
+
 # ============================================================
 # PLATFORM INFORMATION
 # ============================================================
@@ -55,8 +58,6 @@ for key, value in platform_info.items():
     logger.info(f"  {key}: {value}")
 
 logger.info("=====================")
-
-
 # ============================================================
 # CONFIGURATION VALIDATION
 # ============================================================
