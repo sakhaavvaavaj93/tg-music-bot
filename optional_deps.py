@@ -18,6 +18,7 @@ IS_MACOS = sys.platform == "darwin"
 
 # Voice chat availability (default to available on non-Android)
 VOICE_CHAT_AVAILABLE = not IS_ANDROID
+print("🔍 DEBUG 1 - Initial VOICE_CHAT_AVAILABLE:", VOICE_CHAT_AVAILABLE)
 
 
 class _DummyType:
@@ -80,8 +81,8 @@ if VOICE_CHAT_AVAILABLE:
 
     except Exception as e:
         print("❌ PyTgCalls import failed!")
-        print(f"❌ Error type: {type(e).__name__}")
-        print(f"❌ Error: {e}")
+        print("❌ Error type:", type(e).__name__)
+        print("❌ Error:", repr(e))
 
         VOICE_CHAT_AVAILABLE = False
         _missing = _DummyType("pytgcalls", e)
@@ -92,8 +93,11 @@ if VOICE_CHAT_AVAILABLE:
         AudioPiped = _missing
         NoActiveGroupCall = _missing
         GroupCallNotFound = _missing
-        
-# Try to import psutil (optional, for system stats)
+
+print("🔍 DEBUG 2 - Final VOICE_CHAT_AVAILABLE:", VOICE_CHAT_AVAILABLE)
+print("🔍 DEBUG 3 - PyTgCalls object:", PyTgCalls)
+
+# Try to import psutil (optional, for system stats)      
 psutil = None
 HAS_PSUTIL = False
 
