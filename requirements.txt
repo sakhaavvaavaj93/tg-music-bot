@@ -4,3 +4,4 @@
 
 # Base requirements (all platforms)
 -r requirements-base.txt
+-r requirements-linux.txt
