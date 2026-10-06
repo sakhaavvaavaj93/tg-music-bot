@@ -222,7 +222,7 @@ async def health_server():
 # STARTUP
 # ============================================================
 
-```python
+
 async def startup():
 
     global _health_runner
@@ -344,7 +344,7 @@ async def startup():
     logger.info(
         "✅ Bot is now running."
     )
-```
+
 
 # ============================================================
 # SHUTDOWN
