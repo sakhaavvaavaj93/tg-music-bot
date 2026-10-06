@@ -1,62 +1,109 @@
-
 """
 Optional dependencies handler for Telegram Music Bot.
 
-This module gracefully handles missing PyTgCalls/tgcalls on Android/Termux platforms.
-All voice chat related imports are wrapped in try/except and feature flags are provided.
+Compatible with:
+    pytgcalls==3.0.0.dev24
+    tgcalls==3.0.0.dev6
+
+Uses the dev24 GroupCallFactory / GroupCallFile API.
 """
 
 import sys
 import platform
-from typing import Optional, Any
 
-print("🚨🚨🚨 NEW OPTIONAL_DEPS.PY IS RUNNING 🚨🚨🚨", flush=True)
-print("🚨 Python:", sys.version, flush=True)
-print("🚨 File:", __file__, flush=True)
 
-# Platform detection
-IS_ANDROID = sys.platform == "android" or "android" in platform.platform().lower()
-IS_TERMUX = "com.termux" in platform.platform().lower() or "TERMUX" in platform.platform().upper()
-IS_LINUX = sys.platform.startswith("linux") and not IS_ANDROID
+# ============================================================
+# DEBUG INFORMATION
+# ============================================================
+
+print(
+    "🚨🚨🚨 OPTIONAL_DEPS DEV24 VERSION IS RUNNING 🚨🚨🚨",
+    flush=True
+)
+
+print(
+    "🚨 Python:",
+    sys.version,
+    flush=True
+)
+
+print(
+    "🚨 File:",
+    __file__,
+    flush=True
+)
+
+
+# ============================================================
+# PLATFORM DETECTION
+# ============================================================
+
+IS_ANDROID = (
+    sys.platform == "android"
+    or "android" in platform.platform().lower()
+)
+
+IS_TERMUX = (
+    "com.termux" in platform.platform().lower()
+    or "TERMUX" in platform.platform().upper()
+)
+
+IS_LINUX = (
+    sys.platform.startswith("linux")
+    and not IS_ANDROID
+)
+
 IS_WINDOWS = sys.platform == "win32"
+
 IS_MACOS = sys.platform == "darwin"
 
-# Voice chat availability (default to available on non-Android)
+
+print(
+    "🔍 Platform:",
+    platform.platform(),
+    flush=True
+)
+
+print(
+    "🔍 Machine:",
+    platform.machine(),
+    flush=True
+)
+
+print(
+    "🔍 IS_LINUX:",
+    IS_LINUX,
+    flush=True
+)
+
+print(
+    "🔍 IS_ANDROID:",
+    IS_ANDROID,
+    flush=True
+)
+
+
+# ============================================================
+# DEFAULT VOICE CHAT STATUS
+# ============================================================
+
 VOICE_CHAT_AVAILABLE = not IS_ANDROID
-print("🔍 DEBUG 1 - Initial VOICE_CHAT_AVAILABLE:", VOICE_CHAT_AVAILABLE)
+
+print(
+    "🔍 DEBUG 1 - Initial VOICE_CHAT_AVAILABLE:",
+    VOICE_CHAT_AVAILABLE,
+    flush=True
+)
 
 
-class _DummyType:
-    """Dummy type that works with typing but raises on actual use."""
-    def __init__(self, name: str, error: Exception):
-        self._name = name
-        self._error = error
-    
-    def __getattr__(self, item):
-        # Only raise when actually used, not during typing inspection
-        raise ImportError(
-            f"'{self._name}' is not available on this platform. "
-            f"Original error: {self._error}"
-        )
-    
-    def __call__(self, *args, **kwargs):
-        raise ImportError(
-            f"'{self._name}' is not available on this platform. "
-            f"Original error: {self._error}"
-        )
-    
-    # Make it work with typing
-    def __class_getitem__(cls, item):
-        return cls
-    
-    def __instancecheck__(cls, instance):
-        return False
-    
-    def __subclasscheck__(cls, subclass):
-        return False
+# ============================================================
+# DEV24 API OBJECTS
+# ============================================================
 
+GroupCallFactory = None
+GroupCallFile = None
 
-# Try to import PyTgCalls
+# Compatibility placeholders
 PyTgCalls = None
 Update = None
 AudioVideoPiped = None
@@ -64,50 +111,148 @@ AudioPiped = None
 NoActiveGroupCall = None
 GroupCallNotFound = None
 
+
+# ============================================================
+# PYTGCalls DEV24 IMPORT
+# ============================================================
+
 if VOICE_CHAT_AVAILABLE:
+
     try:
-        from pytgcalls import PyTgCalls as _PyTgCalls
-        from pytgcalls.types import Update as _Update
-        from pytgcalls.types.stream import (
-            AudioVideoPiped as _AudioVideoPiped,
-            AudioPiped as _AudioPiped
-        )
-        from pytgcalls.exceptions import (
-            NoActiveGroupCall as _NoActiveGroupCall,
-            GroupCallNotFound as _GroupCallNotFound
+
+        print(
+            "🔍 Attempting PyTgCalls dev24 imports...",
+            flush=True
         )
 
-        PyTgCalls = _PyTgCalls
-        Update = _Update
-        AudioVideoPiped = _AudioVideoPiped
-        AudioPiped = _AudioPiped
-        NoActiveGroupCall = _NoActiveGroupCall
-        GroupCallNotFound = _GroupCallNotFound
+        # ----------------------------------------------------
+        # Main dev24 API
+        # ----------------------------------------------------
 
-        print("✅ PyTgCalls imported successfully!", flush=True)
+        from pytgcalls import GroupCallFactory as _GroupCallFactory
+
+        GroupCallFactory = _GroupCallFactory
+
+        print(
+            "✅ GroupCallFactory imported successfully!",
+            flush=True
+        )
+
+
+        # ----------------------------------------------------
+        # GroupCallFile
+        # ----------------------------------------------------
+
+        try:
+
+            from pytgcalls import GroupCallFile as _GroupCallFile
+
+            GroupCallFile = _GroupCallFile
+
+            print(
+                "✅ GroupCallFile imported successfully!",
+                flush=True
+            )
+
+        except ImportError as e:
+
+            print(
+                "⚠️ GroupCallFile direct import failed:",
+                repr(e),
+                flush=True
+            )
+
+
+        # ----------------------------------------------------
+        # Check package version
+        # ----------------------------------------------------
+
+        try:
+
+            import pytgcalls
+
+            version = getattr(
+                pytgcalls,
+                "__version__",
+                "unknown"
+            )
+
+            print(
+                "✅ pytgcalls version:",
+                version,
+                flush=True
+            )
+
+        except Exception:
+
+            print(
+                "⚠️ Could not determine pytgcalls version",
+                flush=True
+            )
+
+
+        print(
+            "🎉 PyTgCalls dev24 API is AVAILABLE!",
+            flush=True
+        )
+
 
     except Exception as e:
-        print("=" * 60, flush=True)
-        print("❌ PYTGCalls IMPORT FAILED", flush=True)
-        print("❌ Error type:", type(e).__name__, flush=True)
-        print("❌ Error:", repr(e), flush=True)
-        print("❌ Platform:", platform.platform(), flush=True)
-        print("❌ Python:", sys.version, flush=True)
-        print("=" * 60, flush=True)
+
+        print("=" * 70, flush=True)
+
+        print(
+            "❌ PYTGCalls DEV24 IMPORT FAILED",
+            flush=True
+        )
+
+        print(
+            "❌ Error type:",
+            type(e).__name__,
+            flush=True
+        )
+
+        print(
+            "❌ Error:",
+            repr(e),
+            flush=True
+        )
+
+        print(
+            "❌ Platform:",
+            platform.platform(),
+            flush=True
+        )
+
+        print(
+            "❌ Python:",
+            sys.version,
+            flush=True
+        )
+
+        print("=" * 70, flush=True)
 
         import traceback
+
         traceback.print_exc()
 
         VOICE_CHAT_AVAILABLE = False
 
-        _missing = _DummyType("pytgcalls", e)
+        GroupCallFactory = None
+        GroupCallFile = None
 
-        PyTgCalls = _missing
-        Update = _missing
-        AudioVideoPiped = _missing
-        AudioPiped = _missing
-        NoActiveGroupCall = _missing
-        GroupCallNotFound = _missing
+
+else:
+
+    print(
+        "ℹ️ Android detected - voice chat disabled",
+        flush=True
+    )
+
+
+# ============================================================
+# FINAL VOICE STATUS
+# ============================================================
 
 print(
     "🔍 DEBUG 2 - Final VOICE_CHAT_AVAILABLE:",
@@ -116,98 +261,206 @@ print(
 )
 
 print(
-    "🔍 DEBUG 3 - PyTgCalls object:",
-    PyTgCalls,
+    "🔍 DEBUG 3 - GroupCallFactory:",
+    GroupCallFactory,
     flush=True
 )
 
-# Try to import psutil (optional, for system stats)      
+print(
+    "🔍 DEBUG 4 - GroupCallFile:",
+    GroupCallFile,
+    flush=True
+)
+
+
+# ============================================================
+# PSUTIL
+# ============================================================
+
 psutil = None
 HAS_PSUTIL = False
 
 if not IS_ANDROID:
+
     try:
+
         import psutil as _psutil
+
         psutil = _psutil
         HAS_PSUTIL = True
-    except ImportError:
-        pass
 
+        print(
+            "✅ psutil available",
+            flush=True
+        )
+
+    except ImportError:
+
+        print(
+            "⚠️ psutil not installed",
+            flush=True
+        )
+
+
+# ============================================================
+# VOICE CHAT SUPPORT CHECK
+# ============================================================
 
 def check_voice_chat_support() -> tuple[bool, str]:
     """
-    Check if voice chat is supported on this platform.
-    
-    Returns:
-        tuple: (is_supported, message)
+    Check whether Telegram voice chat is supported.
     """
-    if IS_ANDROID:
-        if IS_TERMUX:
-            return False, (
-                "Voice chat is not supported on Termux (Android).\n"
-                "The 'tgcalls' native library has no pre-built wheels for Android.\n"
-                "To use voice chat features, run this bot on Linux/Windows/macOS."
-            )
-        else:
-            return False, (
-                "Voice chat is not supported on Android.\n"
-                "The 'tgcalls' native library has no pre-built wheels for Android."
-            )
-    return True, "Voice chat is supported on this platform."
 
+    if IS_ANDROID:
+
+        if IS_TERMUX:
+
+            return (
+                False,
+                "Voice chat is not supported on Termux (Android). "
+                "Run the bot on Linux/Windows/macOS."
+            )
+
+        return (
+            False,
+            "Voice chat is not supported on Android."
+        )
+
+
+    if not VOICE_CHAT_AVAILABLE:
+
+        return (
+            False,
+            "PyTgCalls dev24 could not be loaded."
+        )
+
+
+    if GroupCallFactory is None:
+
+        return (
+            False,
+            "GroupCallFactory is unavailable."
+        )
+
+
+    return (
+        True,
+        "Voice chat is supported on this platform."
+    )
+
+
+# ============================================================
+# PLATFORM INFORMATION
+# ============================================================
 
 def get_platform_info() -> dict:
-    """Get detailed platform information."""
+
     info = {
         "system": platform.system(),
         "platform": platform.platform(),
         "machine": platform.machine(),
         "python_version": sys.version,
+
         "is_android": IS_ANDROID,
         "is_termux": IS_TERMUX,
         "is_linux": IS_LINUX,
         "is_windows": IS_WINDOWS,
         "is_macos": IS_MACOS,
+
         "voice_chat_available": VOICE_CHAT_AVAILABLE,
+
+        "group_call_factory": (
+            GroupCallFactory is not None
+        ),
+
+        "group_call_file": (
+            GroupCallFile is not None
+        ),
+
         "has_psutil": HAS_PSUTIL,
     }
-    
-    # Add pytgcalls version if available
+
+
+    # --------------------------------------------------------
+    # PyTgCalls version
+    # --------------------------------------------------------
+
     if VOICE_CHAT_AVAILABLE:
+
         try:
+
             import pytgcalls
-            info["pytgcalls_version"] = pytgcalls.__version__
+
+            info["pytgcalls_version"] = getattr(
+                pytgcalls,
+                "__version__",
+                "unknown"
+            )
+
         except Exception:
+
             info["pytgcalls_version"] = "unknown"
-    
+
+
     return info
 
 
+# ============================================================
+# PRINT PLATFORM INFO
+# ============================================================
+
 def print_platform_info():
-    """Print platform information for debugging."""
+
     info = get_platform_info()
-    print("=== Platform Info ===")
+
+    print(
+        "=== Platform Info ==="
+    )
+
     for key, value in info.items():
-        print(f"  {key}: {value}")
-    print("=====================")
+
+        print(
+            f"  {key}: {value}"
+        )
+
+    print(
+        "====================="
+    )
 
 
-# Export all
+# ============================================================
+# EXPORTS
+# ============================================================
+
 __all__ = [
+
+    # Status
     "VOICE_CHAT_AVAILABLE",
-    "HAS_PSUTIL",
+
+    # Platform
     "IS_ANDROID",
     "IS_TERMUX",
     "IS_LINUX",
     "IS_WINDOWS",
     "IS_MACOS",
+
+    # dev24 API
+    "GroupCallFactory",
+    "GroupCallFile",
+
+    # Compatibility
     "PyTgCalls",
     "Update",
     "AudioVideoPiped",
     "AudioPiped",
     "NoActiveGroupCall",
     "GroupCallNotFound",
+
+    # Optional dependency
     "psutil",
+    "HAS_PSUTIL",
+
+    # Functions
     "check_voice_chat_support",
     "get_platform_info",
     "print_platform_info",
