@@ -1,14 +1,3 @@
-```python
-"""
-Music Downloader and Player for Telegram Music Bot.
-
-Compatible with:
-    pytgcalls==3.0.0.dev24
-    tgcalls==3.0.0.dev6
-
-This version uses the older GroupCallFactory / GroupCallFile API
-instead of the newer PyTgCalls / AudioPiped API.
-"""
 
 import asyncio
 import logging
