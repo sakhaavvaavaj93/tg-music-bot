@@ -1,7 +1,19 @@
 """
 Command handlers for Telegram Music Bot.
-Works with or without PyTgCalls (voice chat).
-Handlers are registered lazily after bot instances are set.
+
+Compatible with:
+    Pyrogram 2.x
+    pytgcalls 3.0.0.dev24
+    GroupCallFactory / GroupCallFile
+
+Voice-chat API used here:
+    GroupCallFile.on_playout_ended()
+    GroupCallFile.start(group)
+    GroupCallFile.input_filename
+    GroupCallFile.stop_playout()
+    GroupCallFile.pause_playout()
+    GroupCallFile.resume_playout()
+    GroupCallFile.set_my_volume()
 """
 
 import asyncio
@@ -11,185 +23,413 @@ from pathlib import Path
 from typing import Optional
 
 from pyrogram import Client, filters
-from pyrogram.types import Message, InlineKeyboardMarkup, InlineKeyboardButton, CallbackQuery
+from pyrogram.types import (
+    Message,
+    InlineKeyboardMarkup,
+    InlineKeyboardButton,
+    CallbackQuery,
+)
 
 from config import config, VOICE_CHAT_AVAILABLE
 from database import db, QueueItem
 from player import downloader, MusicPlayer, TrackInfo
-from optional_deps import (
-    PyTgCalls, Update, AudioVideoPiped, AudioPiped, 
-    NoActiveGroupCall, GroupCallNotFound
-)
 
 logger = logging.getLogger(__name__)
 
-# Command prefix
 PREFIX = config.command_prefix
 
-# Global instances (set by main.py)
+# ============================================================
+# GLOBAL INSTANCES
+# ============================================================
+
 app: Optional[Client] = None
-pytgcalls_client: "Optional[PyTgCalls]" = None
+
+# This is GroupCallFile in pytgcalls dev24.
+group_call = None
+
 player: Optional[MusicPlayer] = None
 shutdown_event: Optional[asyncio.Event] = None
 
-# Flag to track if handlers are registered
 _handlers_registered = False
 
+
+# ============================================================
+# INITIALIZATION
+# ============================================================
 
 def set_bot_instances(
     app_instance: Client,
     pytgcalls_instance,
     player_instance: MusicPlayer,
-    shutdown_evt: asyncio.Event
+    shutdown_evt: asyncio.Event,
 ):
-    """Set global instances from main.py and register handlers."""
-    global app, pytgcalls_client, player, shutdown_event, _handlers_registered
+    """
+    Receive instances from main.py and register handlers.
+    """
+
+    global app
+    global group_call
+    global player
+    global shutdown_event
+    global _handlers_registered
+
     app = app_instance
-    pytgcalls_client = pytgcalls_instance
+    group_call = pytgcalls_instance
     player = player_instance
     shutdown_event = shutdown_evt
-    
+
+    logger.info(
+        "🔧 Handlers initialized | voice=%s | group_call=%s",
+        VOICE_CHAT_AVAILABLE,
+        type(group_call).__name__ if group_call else None,
+    )
+
     if not _handlers_registered:
         _register_handlers()
         _handlers_registered = True
+        logger.info("✅ Telegram handlers registered")
 
 
-# Helper functions
+# ============================================================
+# HELPERS
+# ============================================================
+
 def is_admin(user_id: int) -> bool:
     return user_id in config.admin_ids or config.admin_ids == []
 
 
 async def get_queue_text(chat_id: int) -> str:
     queue = await db.get_queue(chat_id)
+
     if not queue:
         return "📭 صف پخش خالی است."
-    
+
     text = "📋 **صف پخش:**\n\n"
+
     for i, item in enumerate(queue[:10], 1):
-        duration_str = f"{item.duration // 60}:{item.duration % 60:02d}" if item.duration > 0 else "??:??"
-        text += f"{i}. **{item.title}** (`{duration_str}`) — @{item.requested_by}\n"
-    
+        duration = (
+            f"{item.duration // 60}:{item.duration % 60:02d}"
+            if item.duration > 0
+            else "??:??"
+        )
+
+        text += (
+            f"{i}. **{item.title}** "
+            f"(`{duration}`) — @{item.requested_by}\n"
+        )
+
     if len(queue) > 10:
         text += f"\n... و {len(queue) - 10} موزیک دیگر"
-    
+
     return text
 
 
+# ============================================================
+# PLAY NEXT
+# ============================================================
+
 async def play_next(chat_id: int):
-    """Play next track in queue."""
+    """
+    Get next item from database and play it.
+
+    GroupCallFile itself handles the actual playout.
+    """
+
     if not VOICE_CHAT_AVAILABLE or not player:
-        logger.warning(f"play_next called but voice chat not available")
+        logger.warning("play_next called but voice chat is unavailable")
         return
-    
-    next_item = await db.get_next_in_queue(chat_id)
-    if not next_item:
-        # Queue empty, schedule auto-leave
-        settings = await db.get_chat_settings(chat_id)
-        player._schedule_auto_leave(chat_id, settings.get("auto_leave_timeout", config.auto_leave_timeout))
-        return
-    
-    # Download if not already
-    if not next_item.filepath or not Path(next_item.filepath).exists():
-        track = TrackInfo(
-            title=next_item.title,
-            duration=next_item.duration,
-            url=next_item.url,
-            webpage_url=next_item.url,
-            thumbnail="",
-            uploader=next_item.requested_by,
-            filepath=next_item.filepath
+
+    try:
+        next_item = await db.get_next_in_queue(chat_id)
+
+        if not next_item:
+            logger.info(
+                "📭 Queue empty for %s; scheduling auto-leave",
+                chat_id,
+            )
+
+            try:
+                settings = await db.get_chat_settings(chat_id)
+
+                timeout = settings.get(
+                    "auto_leave_timeout",
+                    config.auto_leave_timeout,
+                )
+
+                player._schedule_auto_leave(chat_id, timeout)
+
+            except Exception:
+                logger.exception("Auto-leave scheduling failed")
+
+            return
+
+        logger.info(
+            "▶️ Next track: %s | chat=%s",
+            next_item.title,
+            chat_id,
         )
-        filepath = await downloader.download(track)
-        if filepath:
-            next_item.filepath = filepath
-    
-    if next_item.filepath:
-        success = await player.play(chat_id, TrackInfo(
-            title=next_item.title,
-            duration=next_item.duration,
-            url=next_item.url,
-            webpage_url=next_item.url,
-            thumbnail="",
-            uploader=next_item.requested_by,
-            filepath=next_item.filepath
-        ))
-        if success:
-            await db.remove_from_queue(next_item.id)
-            await db.reorder_queue(chat_id)
+
+        # ----------------------------------------------------
+        # Download if necessary
+        # ----------------------------------------------------
+
+        if (
+            not next_item.filepath
+            or not Path(next_item.filepath).exists()
+        ):
+            logger.info(
+                "⬇️ Downloading queued track: %s",
+                next_item.title,
+            )
+
+            track = TrackInfo(
+                title=next_item.title,
+                duration=next_item.duration,
+                url=next_item.url,
+                webpage_url=next_item.url,
+                thumbnail="",
+                uploader=next_item.requested_by,
+                filepath=next_item.filepath,
+            )
+
+            filepath = await downloader.download(track)
+
+            if filepath:
+                next_item.filepath = filepath
+                logger.info("✅ Download completed: %s", filepath)
+            else:
+                logger.error(
+                    "❌ Download failed: %s",
+                    next_item.title,
+                )
+
+        # ----------------------------------------------------
+        # Play
+        # ----------------------------------------------------
+
+        if next_item.filepath:
+            track = TrackInfo(
+                title=next_item.title,
+                duration=next_item.duration,
+                url=next_item.url,
+                webpage_url=next_item.url,
+                thumbnail="",
+                uploader=next_item.requested_by,
+                filepath=next_item.filepath,
+            )
+
+            success = await player.play(chat_id, track)
+
+            if success:
+                logger.info(
+                    "🎵 Now playing: %s",
+                    next_item.title,
+                )
+
+                await db.remove_from_queue(next_item.id)
+                await db.reorder_queue(chat_id)
+
+            else:
+                logger.error(
+                    "❌ Playback failed: %s",
+                    next_item.title,
+                )
+
+                await db.remove_from_queue(next_item.id)
+                await db.reorder_queue(chat_id)
+
+                await play_next(chat_id)
+
         else:
-            # Failed to play, remove and try next
+            logger.error(
+                "❌ No filepath available: %s",
+                next_item.title,
+            )
+
             await db.remove_from_queue(next_item.id)
             await db.reorder_queue(chat_id)
+
             await play_next(chat_id)
-    else:
-        # Download failed, remove and try next
-        await db.remove_from_queue(next_item.id)
-        await db.reorder_queue(chat_id)
-        await play_next(chat_id)
+
+    except Exception:
+        logger.exception(
+            "❌ play_next() failed for chat %s",
+            chat_id,
+        )
 
 
-def _register_handlers():
-    """Register all command and event handlers."""
-    if not app:
+# ============================================================
+# STREAM / PLAYOUT EVENTS
+# ============================================================
+
+def _register_voice_handlers():
+    """
+    Register pytgcalls dev24 callbacks.
+
+    GroupCallFile does NOT provide:
+        on_stream_end()
+        on_kicked()
+        on_left()
+
+    The important callback for file playback is:
+        on_playout_ended(group_call, filename)
+    """
+
+    if not VOICE_CHAT_AVAILABLE:
+        logger.info("Voice handlers skipped: voice chat unavailable")
         return
-    
-    # PyTgCalls event handlers (only register if available)
-    if VOICE_CHAT_AVAILABLE and pytgcalls_client:
-        @pytgcalls_client.on_stream_end()
-        async def on_stream_end(client: PyTgCalls, update: Update):
-            """Handle stream end - play next in queue."""
-            chat_id = update.chat_id
-            settings = await db.get_chat_settings(chat_id)
-            repeat_mode = settings.get("repeat_mode", "off")
-            
-            if repeat_mode == "one" and player.current_track:
-                # Replay current track
-                await player.play(chat_id, player.current_track)
-            elif repeat_mode == "all":
-                # Add current track back to queue end
-                if player.current_track:
+
+    if not group_call:
+        logger.warning("Voice handlers skipped: group_call is None")
+        return
+
+    # --------------------------------------------------------
+    # PLAYOUT ENDED
+    # --------------------------------------------------------
+
+    if hasattr(group_call, "on_playout_ended"):
+
+        @group_call.on_playout_ended()
+        async def on_playout_ended(call, filename):
+            """
+            Called when GroupCallFile finishes the input file.
+
+            pytgcalls dev24 callback signature:
+                (group_call, filename)
+            """
+
+            try:
+                logger.info(
+                    "🏁 Playout ended: %s",
+                    filename,
+                )
+
+                if not player:
+                    return
+
+                chat_id = player.current_chat_id
+
+                if not chat_id:
+                    logger.warning(
+                        "Playout ended but current_chat_id is empty"
+                    )
+                    return
+
+                current_track = player.current_track
+
+                # ------------------------------------------------
+                # Repeat ONE
+                # ------------------------------------------------
+
+                settings = await db.get_chat_settings(chat_id)
+
+                repeat_mode = settings.get(
+                    "repeat_mode",
+                    "off",
+                )
+
+                if repeat_mode == "one" and current_track:
+                    logger.info(
+                        "🔁 Repeat ONE: %s",
+                        current_track.title,
+                    )
+
+                    success = await player.play(
+                        chat_id,
+                        current_track,
+                    )
+
+                    if not success:
+                        logger.error(
+                            "❌ Failed to repeat current track"
+                        )
+                        await play_next(chat_id)
+
+                    return
+
+                # ------------------------------------------------
+                # Repeat ALL
+                # ------------------------------------------------
+
+                if repeat_mode == "all" and current_track:
+
+                    logger.info(
+                        "🔁 Repeat ALL: adding %s back to queue",
+                        current_track.title,
+                    )
+
                     queue = await db.get_queue(chat_id)
+
                     position = len(queue) + 1
+
                     item = QueueItem(
                         id=None,
                         chat_id=chat_id,
                         user_id=0,
-                        title=player.current_track.title,
-                        duration=player.current_track.duration,
-                        url=player.current_track.url,
-                        filepath=player.current_track.filepath,
+                        title=current_track.title,
+                        duration=current_track.duration,
+                        url=current_track.url,
+                        filepath=current_track.filepath,
                         requested_by="auto-repeat",
                         added_at=datetime.now(),
-                        position=position
+                        position=position,
                     )
+
                     await db.add_to_queue(item)
-                await play_next(chat_id)
-            else:
-                # Normal: play next
-                await play_next(chat_id)
 
-        @pytgcalls_client.on_kicked()
-        async def on_kicked(client: PyTgCalls, chat_id: int):
-            """Bot was kicked from call."""
-            if player:
-                player.current_chat_id = None
-                player.current_track = None
+                # ------------------------------------------------
+                # Clear player state before next track
+                # ------------------------------------------------
+
                 player.is_playing = False
-            logger.info(f"Kicked from chat {chat_id}")
+                player.is_paused = False
 
-        @pytgcalls_client.on_left()
-        async def on_left(client: PyTgCalls, chat_id: int):
-            """Bot left call."""
-            if player:
-                player.current_chat_id = None
-                player.current_track = None
-                player.is_playing = False
-            logger.info(f"Left chat {chat_id}")
+                # ------------------------------------------------
+                # NORMAL / ALL -> NEXT
+                # ------------------------------------------------
 
-    # Command handlers
-    @app.on_message(filters.command("start", prefixes=PREFIX) & filters.private)
+                await play_next(chat_id)
+
+            except Exception:
+                logger.exception(
+                    "❌ Error in on_playout_ended"
+                )
+
+    else:
+        logger.warning(
+            "⚠️ GroupCall object has no on_playout_ended()"
+        )
+
+    logger.info("✅ pytgcalls dev24 voice handlers registered")
+
+
+# ============================================================
+# TELEGRAM HANDLERS
+# ============================================================
+
+def _register_handlers():
+
+    if not app:
+        logger.warning(
+            "Cannot register handlers: app is None"
+        )
+        return
+
+    # Register voice callback first.
+    _register_voice_handlers()
+
+    # ========================================================
+    # /start
+    # ========================================================
+
+    @app.on_message(
+        filters.command("start", prefixes=PREFIX)
+        & filters.private
+    )
     async def start_cmd(client: Client, message: Message):
+
         if VOICE_CHAT_AVAILABLE:
+
             text = """
 🎵 **ربات موزیک تلگرام** 🎵
 
@@ -208,125 +448,136 @@ def _register_handlers():
 
 **نکات:**
 • ربات باید ادمین گروه باشد
-• برای ویس کال گروهی، ربات را به گروه اضافه کنید و ادمین کنید
-• لینک‌های یوتیوب، ساوندکلاود و جستجوی متنی پشتیبانی می‌شود
+• ربات را به گروه اضافه و ادمین کنید
+• ابتدا یک Voice Chat در گروه ایجاد کنید
+• سپس از `/play` استفاده کنید
 """
-        else:
-            text = """
-🎵 **ربات موزیک تلگرام** (حالت محدود) 🎵
 
-⚠️ **ویس چت در این پلتفرم پشتیبانی نمی‌شود** (Android/Termux)
+        else:
+
+            text = """
+🎵 **ربات موزیک تلگرام** 🎵
+
+⚠️ **Voice Chat در این محیط فعال نیست.**
+
 فقط قابلیت دانلود موزیک فعال است.
 
-**دستورات موجود:**
-• `/play <نام یا لینک>` - جستجو و دانلود موزیک
-• `/queue` - نمایش صف دانلود
-• `/help` - راهنمای کامل
-
-**نکات:**
-• فایل‌های دانلود شده در پوشه `downloads/` ذخیره می‌شوند
-• برای پخش در ویس کال، ربات را روی سرور لینوکس/ویندوز/مک اجرا کنید
+**دستورات:**
+• `/play <نام یا لینک>`
+• `/queue`
+• `/help`
 """
+
         await message.reply(text)
 
-    @app.on_message(filters.command("help", prefixes=PREFIX))
+    # ========================================================
+    # /help
+    # ========================================================
+
+    @app.on_message(
+        filters.command("help", prefixes=PREFIX)
+    )
     async def help_cmd(client: Client, message: Message):
+
         if VOICE_CHAT_AVAILABLE:
+
             text = """
-🎵 **راهنمای کامل ربات موزیک**
+🎵 **راهنمای ربات موزیک**
 
-**دستورات پخش:**
-• `/play <لینک/متن>` - جستجو و اضافه کردن به صف
-• `/play <لینک یوتیوب>` - پخش مستقیم از یوتیوب
-
-**کنترل صف:**
-• `/queue` - نمایش صف پخش
-• `/clear` - پاک کردن صف (ادمین)
-• `/shuffle` - شافل کردن صف (ادمین)
-• `/remove <شماره>` - حذف از صف
-
-**کنترل پخش:**
-• `/skip` - رد کردن آهنگ فعلی
+**പ്ലേബാക്ക്:**
+• `/play <لینک/متن>` - اضافه کردن موزیک
+• `/queue` - نمایش صف
+• `/skip` - آهنگ بعدی
 • `/pause` - توقف موقت
-• `/resume` - ادامه پخش
-• `/stop` - توقف کامل و خروج
-• `/restart` - پخش مجدد آهنگ فعلی
+• `/resume` - ادامه
+• `/stop` - توقف کامل
+• `/now` - آهنگ فعلی
+• `/volume <0-200>` - تنظیم صدا
 
-**تنظیمات:**
-• `/volume <0-200>` - تنظیم میزان صدا
-• `/repeat <off/one/all>` - تکرار (آدمن)
-• `/autoleave <ثانیه>` - خروج خودکار بعد از بی‌فعالیتی
+**صف:**
+• `/clear` - پاک کردن صف
+• `/repeat <off|one|all>` - حالت تکرار
 
-**اطلاعات:**
-• `/now` - اطلاعات آهنگ در حال پخش
-
-**ادمین‌ها:**
-• `/leave` - اجبار به خروج (ادمین)
-• `/ban <یوزر>` - بن کردن کاربر از استفاده (ادمین)
-• `/unban <یوزر>` - آنبن کردن (ادمین)
-
-**نحوه استفاده:**
-1. ربات را به گروه اضافه کنید
-2. ربات را ادمین گروه کنید (حداقل مدیریت ویس کال)
-3. به ویس کال گروهی بپیوندید
-4. از `/play` برای اضافه کردن موزیک استفاده کنید
+**مدیریت:**
+• `/leave` - خروج از Voice Chat
 """
+
         else:
+
             text = """
-🎵 **راهنمای ربات موزیک (حالت محدود - Termux/Android)**
+🎵 **راهنمای ربات موزیک**
 
-⚠️ **ویس چت پشتیبانی نمی‌شود** - فقط دانلود موزیک فعال است
+⚠️ Voice Chat در حال حاضر فعال نیست.
 
-**دستورات موجود:**
-• `/play <نام یا لینک>` - جستجو و دانلود موزیک
-• `/queue` - نمایش صف دانلود
-• `/clear` - پاک کردن صف (ادمین)
-
-**فایل‌های دانلود شده:**
-موزیک‌ها در پوشه `downloads/` به فرمت MP3 ذخیره می‌شوند.
-
-**برای استفاده کامل (ویس کال):**
-ربات را روی سرور لینوکس/ویندوز/مک اجرا کنید:
-```bash
-git clone https://github.com/mehrshadharry/tg-music-bot.git
-cd tg-music-bot
-cp config.example.py config.py
-# ویرایش config.py
-./run.sh
-```
+• `/play <نام یا لینک>` - دانلود موزیک
+• `/queue` - نمایش صف
+• `/clear` - پاک کردن صف
 """
+
         await message.reply(text)
 
-    @app.on_message(filters.command("play", prefixes=PREFIX) & filters.group)
+    # ========================================================
+    # /play
+    # ========================================================
+
+    @app.on_message(
+        filters.command("play", prefixes=PREFIX)
+        & filters.group
+    )
     async def play_cmd(client: Client, message: Message):
+
         if len(message.command) < 2:
-            await message.reply("❌ لطفاً نام آهنگ یا لینک را وارد کنید.\nمثال: `/play shape of you` یا `/play https://youtube.com/...`")
+            await message.reply(
+                "❌ لطفاً نام آهنگ یا لینک را وارد کنید.\n\n"
+                "مثال:\n"
+                "`/play shape of you`\n"
+                "`/play https://youtube.com/...`"
+            )
             return
-        
+
         query = " ".join(message.command[1:])
         chat_id = message.chat.id
         user = message.from_user
-        
-        # Send searching message
-        status_msg = await message.reply("🔍 در حال جستجو...")
-        
-        # Extract info
+
+        status_msg = await message.reply(
+            "🔍 در حال جستجو..."
+        )
+
+        # ----------------------------------------------------
+        # Extract
+        # ----------------------------------------------------
+
         track = await downloader.extract_info(query)
+
         if not track:
-            await status_msg.edit("❌ موزیکی یافت نشد. لینک یا نام دیگری امتحان کنید.")
+            await status_msg.edit(
+                "❌ موزیکی یافت نشد."
+            )
             return
-        
+
+        # ----------------------------------------------------
         # Download
-        await status_msg.edit(f"⬇️ در حال دانلود: **{track.title}**...")
+        # ----------------------------------------------------
+
+        await status_msg.edit(
+            f"⬇️ در حال دانلود:\n**{track.title}**"
+        )
+
         filepath = await downloader.download(track)
+
         if not filepath:
-            await status_msg.edit("❌ خطا در دانلود موزیک.")
+            await status_msg.edit(
+                "❌ خطا در دانلود موزیک."
+            )
             return
-        
-        # Add to queue
+
+        # ----------------------------------------------------
+        # Queue
+        # ----------------------------------------------------
+
         queue = await db.get_queue(chat_id)
         position = len(queue) + 1
-        
+
         item = QueueItem(
             id=None,
             chat_id=chat_id,
@@ -335,273 +586,787 @@ cp config.example.py config.py
             duration=track.duration,
             url=track.webpage_url,
             filepath=filepath,
-            requested_by=user.username or user.first_name,
+            requested_by=(
+                user.username
+                or user.first_name
+                or str(user.id)
+            ),
             added_at=datetime.now(),
-            position=position
+            position=position,
         )
-        
+
         await db.add_to_queue(item)
-        
+
+        # ----------------------------------------------------
+        # Playback
+        # ----------------------------------------------------
+
         if VOICE_CHAT_AVAILABLE:
-            # If nothing playing, start playback
-            if not player.is_playing or player.current_chat_id != chat_id:
-                await status_msg.edit(f"▶️ در حال پخش: **{track.title}**")
+
+            if (
+                not player.is_playing
+                or player.current_chat_id != chat_id
+            ):
+
+                await status_msg.edit(
+                    f"▶️ **{track.title}**\n"
+                    "Voice Chat-ൽ പ്ലേ ചെയ്യുന്നു..."
+                )
+
                 await play_next(chat_id)
+
             else:
-                await status_msg.edit(f"✅ به صف اضافه شد: **{track.title}** (موقعیت: {position})")
-        else:
-            await status_msg.edit(f"✅ دانلود شد: **{track.title}**\n📁 ذخیره شده در: `{filepath}`\n⚠️ ویس چت در این پلتفرم پشتیبانی نمی‌شود.")
 
-    @app.on_message(filters.command("queue", prefixes=PREFIX) & filters.group)
+                await status_msg.edit(
+                    f"✅ **{track.title}** queue-ലേക്ക് ചേർത്തു.\n"
+                    f"📍 Position: `{position}`"
+                )
+
+        else:
+
+            await status_msg.edit(
+                f"✅ ഡൗൺലോഡ് ചെയ്തു:\n"
+                f"**{track.title}**\n\n"
+                f"📁 `{filepath}`"
+            )
+
+    # ========================================================
+    # /queue
+    # ========================================================
+
+    @app.on_message(
+        filters.command("queue", prefixes=PREFIX)
+        & filters.group
+    )
     async def queue_cmd(client: Client, message: Message):
+
         text = await get_queue_text(message.chat.id)
-        
-        # Add inline buttons for queue control
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("🔀 شافل", callback_data="queue_shuffle"),
-             InlineKeyboardButton("🗑 پاک کردن", callback_data="queue_clear")],
-            [InlineKeyboardButton("⏭ رد کردن", callback_data="queue_skip"),
-             InlineKeyboardButton("⏸ توقف", callback_data="queue_pause")]
-        ])
-        
-        if not VOICE_CHAT_AVAILABLE:
-            # Remove voice chat buttons in limited mode
-            keyboard = InlineKeyboardMarkup([
-                [InlineKeyboardButton("🗑 پاک کردن", callback_data="queue_clear")]
-            ])
-        
-        await message.reply(text, reply_markup=keyboard)
 
-    @app.on_message(filters.command("skip", prefixes=PREFIX) & filters.group)
+        keyboard = [
+            [
+                InlineKeyboardButton(
+                    "🔀 ഷഫിൾ",
+                    callback_data="queue_shuffle",
+                ),
+                InlineKeyboardButton(
+                    "🗑 ക്ലിയർ",
+                    callback_data="queue_clear",
+                ),
+            ]
+        ]
+
+        if VOICE_CHAT_AVAILABLE:
+            keyboard.append(
+                [
+                    InlineKeyboardButton(
+                        "⏭ Skip",
+                        callback_data="queue_skip",
+                    ),
+                    InlineKeyboardButton(
+                        "⏸ Pause",
+                        callback_data="queue_pause",
+                    ),
+                ]
+            )
+
+        await message.reply(
+            text,
+            reply_markup=InlineKeyboardMarkup(keyboard),
+        )
+
+    # ========================================================
+    # /skip
+    # ========================================================
+
+    @app.on_message(
+        filters.command("skip", prefixes=PREFIX)
+        & filters.group
+    )
     async def skip_cmd(client: Client, message: Message):
-        if not VOICE_CHAT_AVAILABLE:
-            await message.reply("❌ ویس چت در این پلتفرم پشتیبانی نمی‌شود.")
-            return
-        
-        chat_id = message.chat.id
-        if not player or player.current_chat_id != chat_id or not player.is_playing:
-            await message.reply("❌ هیچ موزیکی در حال پخش نیست.")
-            return
-        
-        # Just trigger next track by stopping current
-        await pytgcalls_client.change_stream(chat_id, AudioVideoPiped(""))
-        await message.reply("⏭ رد شد. در حال پخش موزیک بعدی...")
 
-    @app.on_message(filters.command("pause", prefixes=PREFIX) & filters.group)
+        if not VOICE_CHAT_AVAILABLE:
+            await message.reply(
+                "❌ Voice Chat ലഭ്യമല്ല."
+            )
+            return
+
+        chat_id = message.chat.id
+
+        if (
+            not player
+            or player.current_chat_id != chat_id
+            or not player.is_playing
+        ):
+            await message.reply(
+                "❌ ഇപ്പോൾ ഒരു പാട്ടും പ്ലേ ചെയ്യുന്നില്ല."
+            )
+            return
+
+        try:
+
+            # Stop current file.
+            # on_playout_ended is NOT fired by stop_playout(),
+            # therefore explicitly start next track.
+            group_call.stop_playout()
+
+            player.is_playing = False
+            player.is_paused = False
+
+            await message.reply(
+                "⏭️ Skip ചെയ്തു. അടുത്ത പാട്ട്..."
+            )
+
+            await play_next(chat_id)
+
+        except Exception:
+
+            logger.exception(
+                "Skip failed"
+            )
+
+            await message.reply(
+                "❌ Skip ചെയ്യുന്നതിൽ പിശക്."
+            )
+
+    # ========================================================
+    # /pause
+    # ========================================================
+
+    @app.on_message(
+        filters.command("pause", prefixes=PREFIX)
+        & filters.group
+    )
     async def pause_cmd(client: Client, message: Message):
+
         if not VOICE_CHAT_AVAILABLE:
-            await message.reply("❌ ویس چت در این پلتفرم پشتیبانی نمی‌شود.")
+            await message.reply(
+                "❌ Voice Chat ലഭ്യമല്ല."
+            )
             return
-        
+
         chat_id = message.chat.id
-        if not player or player.current_chat_id != chat_id or not player.is_playing:
-            await message.reply("❌ هیچ موزیکی در حال پخش نیست.")
+
+        if (
+            not player
+            or player.current_chat_id != chat_id
+            or not player.is_playing
+        ):
+            await message.reply(
+                "❌ ഇപ്പോൾ പാട്ട് പ്ലേ ചെയ്യുന്നില്ല."
+            )
             return
-        
+
         if player.is_paused:
-            await message.reply("❌ موزیک قبلاً متوقف شده.")
+            await message.reply(
+                "❌ പാട്ട് ഇതിനകം paused ആണ്."
+            )
             return
-        
+
         success = await player.pause(chat_id)
-        if success:
-            await message.reply("⏸ موزیک متوقف شد.")
-        else:
-            await message.reply("❌ خطا در توقف موزیک.")
 
-    @app.on_message(filters.command("resume", prefixes=PREFIX) & filters.group)
+        if success:
+            await message.reply(
+                "⏸️ പാട്ട് pause ചെയ്തു."
+            )
+        else:
+            await message.reply(
+                "❌ Pause ചെയ്യാൻ കഴിഞ്ഞില്ല."
+            )
+
+    # ========================================================
+    # /resume
+    # ========================================================
+
+    @app.on_message(
+        filters.command("resume", prefixes=PREFIX)
+        & filters.group
+    )
     async def resume_cmd(client: Client, message: Message):
+
         if not VOICE_CHAT_AVAILABLE:
-            await message.reply("❌ ویس چت در این پلتفرم پشتیبانی نمی‌شود.")
+            await message.reply(
+                "❌ Voice Chat ലഭ്യമല്ല."
+            )
             return
-        
+
         chat_id = message.chat.id
-        if not player or player.current_chat_id != chat_id or not player.is_paused:
-            await message.reply("❌ موزیکی متوقف شده برای ادامه وجود ندارد.")
+
+        if (
+            not player
+            or player.current_chat_id != chat_id
+            or not player.is_paused
+        ):
+            await message.reply(
+                "❌ Resume ചെയ്യാൻ paused track ഇല്ല."
+            )
             return
-        
+
         success = await player.resume(chat_id)
-        if success:
-            await message.reply("▶️ موزیک ادامه یافت.")
-        else:
-            await message.reply("❌ خطا در ادامه موزیک.")
 
-    @app.on_message(filters.command("stop", prefixes=PREFIX) & filters.group)
+        if success:
+            await message.reply(
+                "▶️ പാട്ട് resume ചെയ്തു."
+            )
+        else:
+            await message.reply(
+                "❌ Resume ചെയ്യാൻ കഴിഞ്ഞില്ല."
+            )
+
+    # ========================================================
+    # /stop
+    # ========================================================
+
+    @app.on_message(
+        filters.command("stop", prefixes=PREFIX)
+        & filters.group
+    )
     async def stop_cmd(client: Client, message: Message):
-        if not VOICE_CHAT_AVAILABLE:
-            await message.reply("❌ ویس چت در این پلتفرم پشتیبانی نمی‌شود.")
-            return
-        
-        chat_id = message.chat.id
-        if not player or player.current_chat_id != chat_id:
-            await message.reply("❌ ربات در این گروه در کال نیست.")
-            return
-        
-        success = await player.stop(chat_id)
-        await db.clear_queue(chat_id)
-        
-        if success:
-            await message.reply("⏹ موزیک متوقف شد و ربات از کال خارج شد. صف هم پاک شد.")
-        else:
-            await message.reply("❌ خطا در توقف.")
 
-    @app.on_message(filters.command("now", prefixes=PREFIX) & filters.group)
-    async def now_cmd(client: Client, message: Message):
-        if not VOICE_CHAT_AVAILABLE or not player or not player.current_track or player.current_chat_id != message.chat.id:
-            await message.reply("❌ هیچ موزیکی در حال پخش نیست.")
+        if not VOICE_CHAT_AVAILABLE:
+            await message.reply(
+                "❌ Voice Chat ലഭ്യമല്ല."
+            )
             return
-        
+
+        chat_id = message.chat.id
+
+        if (
+            not player
+            or player.current_chat_id != chat_id
+        ):
+            await message.reply(
+                "❌ റബോട്ട് ഈ group-ലെ Voice Chat-ൽ ഇല്ല."
+            )
+            return
+
+        try:
+
+            success = await player.stop(chat_id)
+
+            await db.clear_queue(chat_id)
+
+            if success:
+                await message.reply(
+                    "⏹️ Playback നിർത്തി.\n"
+                    "👋 Voice Chat-ൽ നിന്ന് പുറത്തുകടന്നു.\n"
+                    "🗑 Queue clear ചെയ്തു."
+                )
+            else:
+                await message.reply(
+                    "❌ Stop ചെയ്യുന്നതിൽ പിശക്."
+                )
+
+        except Exception:
+
+            logger.exception(
+                "Stop command failed"
+            )
+
+            await message.reply(
+                "❌ Stop ചെയ്യുന്നതിൽ പിശക്."
+            )
+
+    # ========================================================
+    # /now
+    # ========================================================
+
+    @app.on_message(
+        filters.command("now", prefixes=PREFIX)
+        & filters.group
+    )
+    async def now_cmd(client: Client, message: Message):
+
+        if (
+            not VOICE_CHAT_AVAILABLE
+            or not player
+            or not player.current_track
+            or player.current_chat_id != message.chat.id
+        ):
+            await message.reply(
+                "❌ ഇപ്പോൾ പാട്ട് പ്ലേ ചെയ്യുന്നില്ല."
+            )
+            return
+
         track = player.current_track
         status = player.get_status()
-        
-        duration_str = f"{track.duration // 60}:{track.duration % 60:02d}" if track.duration > 0 else "??:??"
-        
-        text = f"""
-🎵 **در حال پخش:**
-**{track.title}**
-⏱ مدت: `{duration_str}`
-🔊 صدا: `{status['volume']}%`
-🔁 تکرار: `{status['repeat_mode']}`
-"""
-        
-        keyboard = InlineKeyboardMarkup([
-            [InlineKeyboardButton("⏭ رد", callback_data="queue_skip"),
-             InlineKeyboardButton("⏸ توقف", callback_data="queue_pause")],
-            [InlineKeyboardButton("🔊 صدا +", callback_data="vol_up"),
-             InlineKeyboardButton("🔉 صدا -", callback_data="vol_down")]
-        ])
-        
-        await message.reply(text, reply_markup=keyboard)
 
-    @app.on_message(filters.command("volume", prefixes=PREFIX) & filters.group)
+        duration = (
+            f"{track.duration // 60}:"
+            f"{track.duration % 60:02d}"
+            if track.duration > 0
+            else "??:??"
+        )
+
+        text = (
+            "🎵 **ഇപ്പോൾ പ്ലേ ചെയ്യുന്നത്:**\n\n"
+            f"**{track.title}**\n\n"
+            f"⏱ `{duration}`\n"
+            f"🔊 `{status['volume']}%`\n"
+            f"🔁 `{status['repeat_mode']}`"
+        )
+
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "⏭ Skip",
+                        callback_data="queue_skip",
+                    ),
+                    InlineKeyboardButton(
+                        "⏸ Pause",
+                        callback_data="queue_pause",
+                    ),
+                ],
+                [
+                    InlineKeyboardButton(
+                        "🔊 +",
+                        callback_data="vol_up",
+                    ),
+                    InlineKeyboardButton(
+                        "🔉 -",
+                        callback_data="vol_down",
+                    ),
+                ],
+            ]
+        )
+
+        await message.reply(
+            text,
+            reply_markup=keyboard,
+        )
+
+    # ========================================================
+    # /volume
+    # ========================================================
+
+    @app.on_message(
+        filters.command("volume", prefixes=PREFIX)
+        & filters.group
+    )
     async def volume_cmd(client: Client, message: Message):
-        if not VOICE_CHAT_AVAILABLE:
-            await message.reply("❌ ویس چت در این پلتفرم پشتیبانی نمی‌شود.")
-            return
-        
-        if len(message.command) < 2:
-            await message.reply(f"🔊 صدا فعلی: `{player.volume}%`\nاستفاده: `/volume <0-200>`")
-            return
-        
-        try:
-            vol = int(message.command[1])
-            vol = max(0, min(200, vol))
-        except ValueError:
-            await message.reply("❌ عدد نامعتبر. از 0 تا 200 وارد کنید.")
-            return
-        
-        chat_id = message.chat.id
-        if not player or player.current_chat_id != chat_id:
-            await message.reply("❌ ربات در این گروه در کال نیست.")
-            return
-        
-        success = await player.set_volume(chat_id, vol)
-        await db.update_chat_settings(chat_id, volume=vol)
-        
-        if success:
-            await message.reply(f"🔊 صدا روی `{vol}%` تنظیم شد.")
-        else:
-            await message.reply("❌ خطا در تنظیم صدا.")
 
-    @app.on_message(filters.command("repeat", prefixes=PREFIX) & filters.group)
-    async def repeat_cmd(client: Client, message: Message):
-        if not is_admin(message.from_user.id):
-            await message.reply("❌ فقط ادمین‌ها می‌توانند تکرار را تغییر دهند.")
+        if not VOICE_CHAT_AVAILABLE:
+            await message.reply(
+                "❌ Voice Chat ലഭ്യമല്ല."
+            )
             return
-        
+
         if len(message.command) < 2:
-            settings = await db.get_chat_settings(message.chat.id)
-            await message.reply(f"🔁 حالت تکرار فعلی: `{settings.get('repeat_mode', 'off')}`\nاستفاده: `/repeat <off|one|all>`")
+
+            current = (
+                player.volume
+                if player
+                else 100
+            )
+
+            await message.reply(
+                f"🔊 നിലവിലെ volume: `{current}%`\n\n"
+                "ഉപയോഗം:\n"
+                "`/volume 100`"
+            )
             return
-        
+
+        try:
+            volume = int(message.command[1])
+            volume = max(0, min(200, volume))
+
+        except ValueError:
+            await message.reply(
+                "❌ 0 മുതൽ 200 വരെ ഒരു number നൽകുക."
+            )
+            return
+
+        chat_id = message.chat.id
+
+        if (
+            not player
+            or player.current_chat_id != chat_id
+        ):
+            await message.reply(
+                "❌ റബോട്ട് Voice Chat-ൽ ഇല്ല."
+            )
+            return
+
+        success = await player.set_volume(
+            chat_id,
+            volume,
+        )
+
+        if success:
+            await db.update_chat_settings(
+                chat_id,
+                volume=volume,
+            )
+
+            await message.reply(
+                f"🔊 Volume: `{volume}%`"
+            )
+        else:
+            await message.reply(
+                "❌ Volume മാറ്റാൻ കഴിഞ്ഞില്ല."
+            )
+
+    # ========================================================
+    # /repeat
+    # ========================================================
+
+    @app.on_message(
+        filters.command("repeat", prefixes=PREFIX)
+        & filters.group
+    )
+    async def repeat_cmd(client: Client, message: Message):
+
+        if not is_admin(message.from_user.id):
+            await message.reply(
+                "❌ ഇത് admin-കൾക്ക് മാത്രം."
+            )
+            return
+
+        if len(message.command) < 2:
+
+            settings = await db.get_chat_settings(
+                message.chat.id
+            )
+
+            await message.reply(
+                "🔁 Repeat mode: "
+                f"`{settings.get('repeat_mode', 'off')}`\n\n"
+                "ഉപയോഗം:\n"
+                "`/repeat off`\n"
+                "`/repeat one`\n"
+                "`/repeat all`"
+            )
+            return
+
         mode = message.command[1].lower()
-        if mode not in ["off", "one", "all"]:
-            await message.reply("❌ حالت نامعتبر. گزینه‌ها: `off`, `one`, `all`")
+
+        if mode not in (
+            "off",
+            "one",
+            "all",
+        ):
+            await message.reply(
+                "❌ Valid modes: `off`, `one`, `all`"
+            )
             return
-        
+
         if player:
             player.repeat_mode = mode
-        await db.update_chat_settings(message.chat.id, repeat_mode=mode)
-        await message.reply(f"🔁 حالت تکرار روی `{mode}` تنظیم شد.")
 
-    @app.on_message(filters.command("clear", prefixes=PREFIX) & filters.group)
+        await db.update_chat_settings(
+            message.chat.id,
+            repeat_mode=mode,
+        )
+
+        await message.reply(
+            f"🔁 Repeat mode: `{mode}`"
+        )
+
+    # ========================================================
+    # /clear
+    # ========================================================
+
+    @app.on_message(
+        filters.command("clear", prefixes=PREFIX)
+        & filters.group
+    )
     async def clear_cmd(client: Client, message: Message):
-        if not is_admin(message.from_user.id):
-            await message.reply("❌ فقط ادمین‌ها می‌توانند صف را پاک کنند.")
-            return
-        
-        count = await db.clear_queue(message.chat.id)
-        await message.reply(f"🗑 صف پاک شد ({count} آیتم حذف شد).")
 
-    @app.on_message(filters.command("leave", prefixes=PREFIX) & filters.group)
-    async def leave_cmd(client: Client, message: Message):
         if not is_admin(message.from_user.id):
-            await message.reply("❌ فقط ادمین‌ها می‌توانند ربات را خارج کنند.")
+            await message.reply(
+                "❌ ഇത് admin-കൾക്ക് മാത്രം."
+            )
             return
-        
+
+        count = await db.clear_queue(
+            message.chat.id
+        )
+
+        await message.reply(
+            f"🗑️ Queue clear ചെയ്തു.\n"
+            f"Deleted: `{count}`"
+        )
+
+    # ========================================================
+    # /leave
+    # ========================================================
+
+    @app.on_message(
+        filters.command("leave", prefixes=PREFIX)
+        & filters.group
+    )
+    async def leave_cmd(client: Client, message: Message):
+
+        if not is_admin(message.from_user.id):
+            await message.reply(
+                "❌ ഇത് admin-കൾക്ക് മാത്രം."
+            )
+            return
+
         if not VOICE_CHAT_AVAILABLE:
-            await message.reply("❌ ویس چت در این پلتفرم پشتیبانی نمی‌شود.")
+            await message.reply(
+                "❌ Voice Chat ലഭ്യമല്ല."
+            )
             return
-        
+
         chat_id = message.chat.id
-        if not player or player.current_chat_id != chat_id:
-            await message.reply("❌ ربات در این گروه در کال نیست.")
+
+        if (
+            not player
+            or player.current_chat_id != chat_id
+        ):
+            await message.reply(
+                "❌ റബോട്ട് ഈ Voice Chat-ൽ ഇല്ല."
+            )
             return
-        
+
         await player.stop(chat_id)
         await db.clear_queue(chat_id)
-        await message.reply("👋 ربات از کال خارج شد و صف پاک شد.")
 
-    # Callback query handlers
+        await message.reply(
+            "👋 Voice Chat-ൽ നിന്ന് പുറത്തുകടന്നു.\n"
+            "🗑️ Queue clear ചെയ്തു."
+        )
+
+    # ========================================================
+    # CALLBACK QUERIES
+    # ========================================================
+
     @app.on_callback_query()
-    async def callback_handler(client: Client, query: CallbackQuery):
-        if not VOICE_CHAT_AVAILABLE and query.data != "queue_clear":
-            await query.answer("❌ ویس چت در این پلتفرم پشتیبانی نمی‌شود.", show_alert=True)
-            return
-        
-        chat_id = query.message.chat.id
+    async def callback_handler(
+        client: Client,
+        query: CallbackQuery,
+    ):
+
         data = query.data
-        
+
+        # ----------------------------------------------------
+        # Limited mode
+        # ----------------------------------------------------
+
+        if (
+            not VOICE_CHAT_AVAILABLE
+            and data != "queue_clear"
+        ):
+            await query.answer(
+                "❌ Voice Chat ലഭ്യമല്ല.",
+                show_alert=True,
+            )
+            return
+
+        if not query.message:
+            await query.answer()
+            return
+
+        chat_id = query.message.chat.id
+
+        # ----------------------------------------------------
+        # SKIP
+        # ----------------------------------------------------
+
         if data == "queue_skip":
-            if player and player.current_chat_id == chat_id and player.is_playing:
-                await pytgcalls_client.change_stream(chat_id, AudioVideoPiped(""))
-                await query.answer("⏭ رد شد")
+
+            if (
+                player
+                and player.current_chat_id == chat_id
+                and player.is_playing
+            ):
+
+                try:
+
+                    group_call.stop_playout()
+
+                    player.is_playing = False
+                    player.is_paused = False
+
+                    await query.answer(
+                        "⏭️ Skip ചെയ്തു"
+                    )
+
+                    await play_next(chat_id)
+
+                except Exception:
+
+                    logger.exception(
+                        "Callback skip failed"
+                    )
+
+                    await query.answer(
+                        "❌ Skip failed",
+                        show_alert=True,
+                    )
+
             else:
-                await query.answer("❌ موزیکی در حال پخش نیست", show_alert=True)
-        
+
+                await query.answer(
+                    "❌ പാട്ട് പ്ലേ ചെയ്യുന്നില്ല.",
+                    show_alert=True,
+                )
+
+        # ----------------------------------------------------
+        # PAUSE / RESUME
+        # ----------------------------------------------------
+
         elif data == "queue_pause":
-            if player and player.current_chat_id == chat_id and player.is_playing:
-                await player.pause(chat_id)
-                await query.answer("⏸ متوقف شد")
-            elif player and player.current_chat_id == chat_id and player.is_paused:
-                await player.resume(chat_id)
-                await query.answer("▶️ ادامه یافت")
+
+            if (
+                player
+                and player.current_chat_id == chat_id
+                and player.is_playing
+            ):
+
+                if player.is_paused:
+
+                    success = await player.resume(
+                        chat_id
+                    )
+
+                    await query.answer(
+                        "▶️ Resume ചെയ്തു"
+                        if success
+                        else "❌ Resume failed"
+                    )
+
+                else:
+
+                    success = await player.pause(
+                        chat_id
+                    )
+
+                    await query.answer(
+                        "⏸️ Pause ചെയ്തു"
+                        if success
+                        else "❌ Pause failed"
+                    )
+
             else:
-                await query.answer("❌ موزیکی در حال پخش نیست", show_alert=True)
-        
+
+                await query.answer(
+                    "❌ പാട്ട് പ്ലേ ചെയ്യുന്നില്ല.",
+                    show_alert=True,
+                )
+
+        # ----------------------------------------------------
+        # CLEAR
+        # ----------------------------------------------------
+
         elif data == "queue_clear":
-            if is_admin(query.from_user.id):
-                count = await db.clear_queue(chat_id)
-                await query.answer(f"🗑 صف پاک شد ({count} آیتم)")
-                await query.message.edit_text(await get_queue_text(chat_id), reply_markup=query.message.reply_markup)
-            else:
-                await query.answer("❌ فقط ادمین‌ها", show_alert=True)
-        
+
+            if not is_admin(
+                query.from_user.id
+            ):
+                await query.answer(
+                    "❌ Admin മാത്രം.",
+                    show_alert=True,
+                )
+                return
+
+            count = await db.clear_queue(
+                chat_id
+            )
+
+            await query.answer(
+                f"🗑️ {count} items deleted"
+            )
+
+            await query.message.edit_text(
+                await get_queue_text(chat_id)
+            )
+
+        # ----------------------------------------------------
+        # SHUFFLE
+        # ----------------------------------------------------
+
         elif data == "queue_shuffle":
-            if is_admin(query.from_user.id):
-                await query.answer("🔀 شافل شد (نیاز به پیاده‌سازی)")
-            else:
-                await query.answer("❌ فقط ادمین‌ها", show_alert=True)
-        
+
+            if not is_admin(
+                query.from_user.id
+            ):
+                await query.answer(
+                    "❌ Admin മാത്രം.",
+                    show_alert=True,
+                )
+                return
+
+            await query.answer(
+                "🔀 Shuffle ഇപ്പോൾ implement ചെയ്തിട്ടില്ല."
+            )
+
+        # ----------------------------------------------------
+        # VOLUME UP
+        # ----------------------------------------------------
+
         elif data == "vol_up":
-            if player and player.current_chat_id == chat_id:
-                new_vol = min(200, player.volume + 10)
-                await player.set_volume(chat_id, new_vol)
-                await db.update_chat_settings(chat_id, volume=new_vol)
-                await query.answer(f"🔊 صدا: {new_vol}%")
-        
+
+            if (
+                player
+                and player.current_chat_id == chat_id
+            ):
+
+                new_volume = min(
+                    200,
+                    player.volume + 10,
+                )
+
+                success = await player.set_volume(
+                    chat_id,
+                    new_volume,
+                )
+
+                if success:
+
+                    await db.update_chat_settings(
+                        chat_id,
+                        volume=new_volume,
+                    )
+
+                    await query.answer(
+                        f"🔊 Volume: {new_volume}%"
+                    )
+
+                else:
+                    await query.answer(
+                        "❌ Volume failed",
+                        show_alert=True,
+                    )
+
+        # ----------------------------------------------------
+        # VOLUME DOWN
+        # ----------------------------------------------------
+
         elif data == "vol_down":
-            if player and player.current_chat_id == chat_id:
-                new_vol = max(0, player.volume - 10)
-                await player.set_volume(chat_id, new_vol)
-                await db.update_chat_settings(chat_id, volume=new_vol)
-                await query.answer(f"🔉 صدا: {new_vol}%")
+
+            if (
+                player
+                and player.current_chat_id == chat_id
+            ):
+
+                new_volume = max(
+                    0,
+                    player.volume - 10,
+                )
+
+                success = await player.set_volume(
+                    chat_id,
+                    new_volume,
+                )
+
+                if success:
+
+                    await db.update_chat_settings(
+                        chat_id,
+                        volume=new_volume,
+                    )
+
+                    await query.answer(
+                        f"🔉 Volume: {new_volume}%"
+                    )
+
+                else:
+                    await query.answer(
+                        "❌ Volume failed",
+                        show_alert=True,
+                    )
+
+        else:
+            await query.answer()
