@@ -1,16 +1,4 @@
 #!/usr/bin/env python3
-"""
-Telegram Music Bot - Main Entry Point
-
-Compatible with:
-    Pyrogram 2.0.106
-    pytgcalls 3.0.0.dev24
-    tgcalls 3.0.0.dev6
-
-Uses:
-    GroupCallFactory
-    GroupCallFile
-"""
 
 import asyncio
 import logging
@@ -22,41 +10,18 @@ from pathlib import Path
 
 from aiohttp import web
 
-
-# ============================================================
-# PROJECT PATH
-# ============================================================
-
 BASE_DIR = Path(__file__).resolve().parent
 sys.path.insert(0, str(BASE_DIR))
 
-
-# ============================================================
-# DEBUG / VERSION CHECK
-# ============================================================
-
-print(
-    "🚨🚨🚨 MAIN.PY DEV24 VERSION IS RUNNING 🚨🚨🚨",
-    flush=True
-)
-
-print(
-    f"🚨 MAIN FILE: {__file__}",
-    flush=True
-)
+print("🚨🚨🚨 MAIN.PY DEV24 VERSION IS RUNNING 🚨🚨🚨", flush=True)
+print(f"🚨 MAIN FILE: {__file__}", flush=True)
 
 spec = importlib.util.find_spec("optional_deps")
-
 print(
     "🚨 OPTIONAL_DEPS FILE:",
     spec.origin if spec else "NOT FOUND",
     flush=True
 )
-
-
-# ============================================================
-# PROJECT IMPORTS
-# ============================================================
 
 from config import config, validate_config
 from database import db
@@ -93,7 +58,7 @@ logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# PLATFORM INFORMATION
+# PLATFORM
 # ============================================================
 
 platform_info = get_platform_info()
@@ -107,7 +72,7 @@ logger.info("=====================")
 
 
 # ============================================================
-# CONFIGURATION
+# CONFIG
 # ============================================================
 
 errors = validate_config()
@@ -122,7 +87,7 @@ if errors:
 
 
 # ============================================================
-# VOICE CHAT STATUS
+# VOICE CHAT
 # ============================================================
 
 voice_supported, voice_msg = check_voice_chat_support()
@@ -156,6 +121,7 @@ group_call = None
 if VOICE_CHAT_AVAILABLE:
 
     try:
+
         from pytgcalls import GroupCallFactory
 
         group_call = (
@@ -174,6 +140,7 @@ if VOICE_CHAT_AVAILABLE:
         )
 
     except Exception:
+
         logger.error(
             "❌ Failed to initialize GroupCallFactory",
             exc_info=True,
@@ -182,6 +149,7 @@ if VOICE_CHAT_AVAILABLE:
         group_call = None
 
 else:
+
     logger.info(
         "ℹ️ GroupCall skipped - voice chat unavailable"
     )
@@ -206,7 +174,7 @@ _health_runner = None
 
 
 # ============================================================
-# RENDER HEALTH SERVER
+# HEALTH SERVER
 # ============================================================
 
 async def health_server():
@@ -220,15 +188,9 @@ async def health_server():
 
     web_app = web.Application()
 
-    web_app.router.add_get(
-        "/",
-        health,
-    )
+    web_app.router.add_get("/", health)
 
-    web_app.router.add_get(
-        "/health",
-        health,
-    )
+    web_app.router.add_get("/health", health)
 
     port = int(
         os.environ.get(
@@ -286,6 +248,23 @@ async def startup():
 
     logger.info(
         "✅ Pyrogram client started"
+    )
+
+    # --------------------------------------------------------
+    # TEMPORARY TELEGRAM UPDATE TEST
+    # --------------------------------------------------------
+
+    @app.on_message()
+    async def debug_all_messages(client, message):
+
+        logger.info(
+            f"📨 DEBUG UPDATE RECEIVED | "
+            f"chat_id={message.chat.id if message.chat else None} | "
+            f"text={message.text!r}"
+        )
+
+    logger.info(
+        "🧪 Telegram debug update handler installed"
     )
 
     # --------------------------------------------------------
@@ -371,9 +350,11 @@ async def shutdown():
     global _health_runner
 
     if _shutdown_started:
+
         logger.info(
             "ℹ️ Shutdown already in progress."
         )
+
         return
 
     _shutdown_started = True
@@ -383,7 +364,7 @@ async def shutdown():
     )
 
     # --------------------------------------------------------
-    # STOP HEALTH SERVER
+    # HEALTH SERVER
     # --------------------------------------------------------
 
     try:
@@ -405,7 +386,7 @@ async def shutdown():
         )
 
     # --------------------------------------------------------
-    # STOP GROUP CALL
+    # GROUP CALL
     # --------------------------------------------------------
 
     try:
@@ -425,7 +406,7 @@ async def shutdown():
         )
 
     # --------------------------------------------------------
-    # STOP PYROGRAM
+    # PYROGRAM
     # --------------------------------------------------------
 
     try:
@@ -454,12 +435,6 @@ async def shutdown():
 # ============================================================
 
 def signal_handler(signum):
-
-    """
-    Signal handler must NOT perform async work.
-
-    It only tells the main coroutine to shut down.
-    """
 
     logger.info(
         f"Received signal {signum}"
@@ -497,15 +472,14 @@ async def main():
                 f"✅ Signal handler installed for {sig.name}"
             )
 
-        except (NotImplementedError, RuntimeError) as e:
+        except (
+            NotImplementedError,
+            RuntimeError,
+        ) as e:
 
             logger.warning(
                 f"Could not install handler for {sig.name}: {e}"
             )
-
-    # --------------------------------------------------------
-    # STARTUP
-    # --------------------------------------------------------
 
     startup_success = False
 
@@ -515,10 +489,7 @@ async def main():
 
         startup_success = True
 
-        # ----------------------------------------------------
-        # KEEP PROCESS ALIVE
-        # ----------------------------------------------------
-
+        # Keep process alive
         await shutdown_event.wait()
 
     except asyncio.CancelledError:
@@ -542,7 +513,7 @@ async def main():
 
 
 # ============================================================
-# PROGRAM ENTRY
+# ENTRY POINT
 # ============================================================
 
 if __name__ == "__main__":
