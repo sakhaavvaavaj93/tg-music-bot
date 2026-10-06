@@ -289,7 +289,7 @@ def _register_voice_handlers():
 
     if hasattr(group_call, "on_playout_ended"):
 
-        @group_call.on_playout_ended()
+        @group_call.on_playout_ended
         async def on_playout_ended(call, filename):
             """
             Called when GroupCallFile finishes the input file.
