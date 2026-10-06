@@ -27,16 +27,13 @@ from aiohttp import web
 # PROJECT PATH
 # ============================================================
 
-sys.path.insert(0, str(Path(__file__).parent))
+BASE_DIR = Path(__file__).resolve().parent
+sys.path.insert(0, str(BASE_DIR))
 
 
 # ============================================================
-# IMPORTS
+# DEBUG / VERSION CHECK
 # ============================================================
-
-from config import config, validate_config
-from database import db
-from player import downloader, MusicPlayer
 
 print(
     "🚨🚨🚨 MAIN.PY DEV24 VERSION IS RUNNING 🚨🚨🚨",
@@ -44,8 +41,7 @@ print(
 )
 
 print(
-    "🚨 MAIN FILE:",
-    __file__,
+    f"🚨 MAIN FILE: {__file__}",
     flush=True
 )
 
@@ -57,6 +53,14 @@ print(
     flush=True
 )
 
+
+# ============================================================
+# PROJECT IMPORTS
+# ============================================================
+
+from config import config, validate_config
+from database import db
+from player import MusicPlayer
 
 from optional_deps import (
     VOICE_CHAT_AVAILABLE,
@@ -76,7 +80,7 @@ logging.basicConfig(
     level=getattr(
         logging,
         config.log_level.upper(),
-        logging.INFO
+        logging.INFO,
     ),
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
@@ -109,7 +113,6 @@ logger.info("=====================")
 errors = validate_config()
 
 if errors:
-
     logger.error("Configuration errors:")
 
     for error in errors:
@@ -125,13 +128,8 @@ if errors:
 voice_supported, voice_msg = check_voice_chat_support()
 
 if VOICE_CHAT_AVAILABLE:
-
-    logger.info(
-        "✅ Voice chat: AVAILABLE"
-    )
-
+    logger.info("✅ Voice chat: AVAILABLE")
 else:
-
     logger.warning(
         f"⚠️ Voice chat: NOT AVAILABLE - {voice_msg}"
     )
@@ -158,20 +156,13 @@ group_call = None
 if VOICE_CHAT_AVAILABLE:
 
     try:
-
         from pytgcalls import GroupCallFactory
 
-        # IMPORTANT:
-        # play_on_repeat MUST be False.
-        #
-        # Otherwise GroupCallFile can keep replaying the
-        # same input file instead of notifying our queue
-        # handler that playback ended.
-
-        group_call = GroupCallFactory(
-            app
-        ).get_file_group_call(
-            play_on_repeat=False
+        group_call = (
+            GroupCallFactory(app)
+            .get_file_group_call(
+                play_on_repeat=False
+            )
         )
 
         logger.info(
@@ -183,16 +174,14 @@ if VOICE_CHAT_AVAILABLE:
         )
 
     except Exception:
-
         logger.error(
             "❌ Failed to initialize GroupCallFactory",
-            exc_info=True
+            exc_info=True,
         )
 
         group_call = None
 
 else:
-
     logger.info(
         "ℹ️ GroupCall skipped - voice chat unavailable"
     )
@@ -206,12 +195,14 @@ player = MusicPlayer(group_call)
 
 
 # ============================================================
-# SHUTDOWN EVENT
+# SHUTDOWN STATE
 # ============================================================
 
 shutdown_event = asyncio.Event()
 
 _shutdown_started = False
+
+_health_runner = None
 
 
 # ============================================================
@@ -223,20 +214,26 @@ async def health_server():
     async def health(request):
 
         return web.Response(
-            text="Telegram Music Bot is running"
+            text="Telegram Music Bot is running",
+            status=200,
         )
 
     web_app = web.Application()
 
     web_app.router.add_get(
         "/",
-        health
+        health,
+    )
+
+    web_app.router.add_get(
+        "/health",
+        health,
     )
 
     port = int(
         os.environ.get(
             "PORT",
-            10000
+            "10000",
         )
     )
 
@@ -247,7 +244,7 @@ async def health_server():
     site = web.TCPSite(
         runner,
         "0.0.0.0",
-        port
+        port,
     )
 
     await site.start()
@@ -264,6 +261,8 @@ async def health_server():
 # ============================================================
 
 async def startup():
+
+    global _health_runner
 
     logger.info(
         "🚀 Starting Telegram Music Bot..."
@@ -340,24 +339,26 @@ async def startup():
     )
 
     # --------------------------------------------------------
+    # HEALTH SERVER
+    # --------------------------------------------------------
+
+    _health_runner = await health_server()
+
+    # --------------------------------------------------------
     # READY
     # --------------------------------------------------------
 
-    if group_call:
+    logger.info(
+        "🎵 Bot is ready!"
+    )
 
-        logger.info(
-            "🎵 Bot is ready!"
-        )
+    logger.info(
+        "🎵 Send /start to the bot or /play <song> in a group."
+    )
 
-        logger.info(
-            "🎵 Send /play <song> in a group."
-        )
-
-    else:
-
-        logger.info(
-            "🎵 Bot is running in limited mode."
-        )
+    logger.info(
+        "✅ Bot is now running."
+    )
 
 
 # ============================================================
@@ -367,9 +368,12 @@ async def startup():
 async def shutdown():
 
     global _shutdown_started
+    global _health_runner
 
-    # Prevent shutdown from running twice.
     if _shutdown_started:
+        logger.info(
+            "ℹ️ Shutdown already in progress."
+        )
         return
 
     _shutdown_started = True
@@ -378,7 +382,27 @@ async def shutdown():
         "🛑 Shutting down..."
     )
 
-    shutdown_event.set()
+    # --------------------------------------------------------
+    # STOP HEALTH SERVER
+    # --------------------------------------------------------
+
+    try:
+
+        if _health_runner:
+
+            await _health_runner.cleanup()
+
+            _health_runner = None
+
+            logger.info(
+                "✅ Health server stopped"
+            )
+
+    except Exception as e:
+
+        logger.warning(
+            f"Error stopping health server: {e}"
+        )
 
     # --------------------------------------------------------
     # STOP GROUP CALL
@@ -429,29 +453,19 @@ async def shutdown():
 # SIGNAL HANDLER
 # ============================================================
 
-def signal_handler(signum, frame):
+def signal_handler(signum):
+
+    """
+    Signal handler must NOT perform async work.
+
+    It only tells the main coroutine to shut down.
+    """
 
     logger.info(
         f"Received signal {signum}"
     )
 
-    # IMPORTANT:
-    # Do NOT call asyncio.create_task(shutdown()) here.
-    #
-    # The previous version could cause shutdown to execute
-    # twice and contributed to:
-    #
-    # "Future attached to a different loop"
-    #
-    # We only signal the main coroutine here.
-
-    try:
-
-        shutdown_event.set()
-
-    except Exception:
-
-        pass
+    shutdown_event.set()
 
 
 # ============================================================
@@ -477,29 +491,33 @@ async def main():
                 sig,
                 signal_handler,
                 sig,
-                None,
             )
 
-        except (NotImplementedError, RuntimeError):
+            logger.info(
+                f"✅ Signal handler installed for {sig.name}"
+            )
 
-            pass
+        except (NotImplementedError, RuntimeError) as e:
+
+            logger.warning(
+                f"Could not install handler for {sig.name}: {e}"
+            )
 
     # --------------------------------------------------------
-    # START
+    # STARTUP
     # --------------------------------------------------------
+
+    startup_success = False
 
     try:
 
         await startup()
 
-        await health_server()
+        startup_success = True
 
-        logger.info(
-            "✅ Bot is now running."
-        )
-
-        # Wait until Render sends SIGTERM
-        # or another shutdown event occurs.
+        # ----------------------------------------------------
+        # KEEP PROCESS ALIVE
+        # ----------------------------------------------------
 
         await shutdown_event.wait()
 
@@ -518,7 +536,9 @@ async def main():
 
     finally:
 
-        await shutdown()
+        if startup_success or app.is_connected:
+
+            await shutdown()
 
 
 # ============================================================
