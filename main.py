@@ -118,42 +118,6 @@ app = Client(
 
 group_call = None
 
-if VOICE_CHAT_AVAILABLE:
-
-    try:
-
-        from pytgcalls import GroupCallFactory
-
-        group_call = (
-            GroupCallFactory(app)
-            .get_file_group_call(
-                play_on_repeat=False
-            )
-        )
-
-        logger.info(
-            "✅ GroupCallFactory initialized successfully"
-        )
-
-        logger.info(
-            "🎙️ GroupCallFile created successfully"
-        )
-
-    except Exception:
-
-        logger.error(
-            "❌ Failed to initialize GroupCallFactory",
-            exc_info=True,
-        )
-
-        group_call = None
-
-else:
-
-    logger.info(
-        "ℹ️ GroupCall skipped - voice chat unavailable"
-    )
-
 
 # ============================================================
 # MUSIC PLAYER
