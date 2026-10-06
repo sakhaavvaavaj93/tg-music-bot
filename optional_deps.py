@@ -9,6 +9,10 @@ import sys
 import platform
 from typing import Optional, Any
 
+print("🚨🚨🚨 NEW OPTIONAL_DEPS.PY IS RUNNING 🚨🚨🚨", flush=True)
+print("🚨 Python:", sys.version, flush=True)
+print("🚨 File:", __file__, flush=True)
+
 # Platform detection
 IS_ANDROID = sys.platform == "android" or "android" in platform.platform().lower()
 IS_TERMUX = "com.termux" in platform.platform().lower() or "TERMUX" in platform.platform().upper()
