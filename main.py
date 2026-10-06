@@ -20,16 +20,29 @@ sys.path.insert(0, str(Path(__file__).parent))
 from config import config, validate_config
 from database import db
 from player import downloader, MusicPlayer
+
+# 🔍 Render deployment diagnostic
+import importlib.util
+
+print("🚨🚨🚨 MAIN.PY NEW CODE IS RUNNING 🚨🚨🚨", flush=True)
+print("🚨 MAIN FILE:", __file__, flush=True)
+
+spec = importlib.util.find_spec("optional_deps")
+print(
+    "🚨 OPTIONAL_DEPS FILE:",
+    spec.origin if spec else "NOT FOUND",
+    flush=True
+)
+
 from optional_deps import (
     VOICE_CHAT_AVAILABLE,
     PyTgCalls,
     check_voice_chat_support,
     get_platform_info
 )
+
 from handlers import set_bot_instances
 from pyrogram import Client
-
-
 # ============================================================
 # LOGGING
 # ============================================================
