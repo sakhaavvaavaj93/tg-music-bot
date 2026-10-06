@@ -153,7 +153,6 @@ async def health_server():
     web_app = web.Application()
 
     web_app.router.add_get("/", health)
-
     web_app.router.add_get("/health", health)
 
     port = int(
@@ -185,82 +184,72 @@ async def health_server():
 # ============================================================
 # STARTUP
 # ============================================================
+
 async def startup():
 
     global _health_runner
     global group_call
     global player
+
     logger.info("🚀 Starting Telegram Music Bot...")
+
+    # --------------------------------------------------------
+    # DATABASE
+    # --------------------------------------------------------
+
     await db.init()
+
     logger.info("✅ Database initialized")
-    # Telegram debug handler
+
+    # --------------------------------------------------------
+    # DEBUG TELEGRAM UPDATE HANDLER
+    # --------------------------------------------------------
+
     @app.on_message()
     async def debug_all_messages(client, message):
+
         logger.info(
             f"📨 DEBUG UPDATE RECEIVED | "
             f"chat_id={message.chat.id if message.chat else None} | "
             f"text={message.text!r}"
         )
-    logger.info("🧪 Telegram update handler registered")
-    # Start Pyrogram
-    await app.start()
-    logger.info("✅ Pyrogram client started")
-    # --------------------------------------------------------
-# GROUP CALL
-# --------------------------------------------------------
-
-if VOICE_CHAT_AVAILABLE:
-
-    try:
-
-        from pytgcalls import GroupCallFactory
-
-        group_call = (
-            GroupCallFactory(app)
-            .get_file_group_call(
-                play_on_repeat=False
-            )
-        )
-
-        logger.info(
-            "✅ GroupCallFactory initialized successfully"
-        )
-
-        logger.info(
-            "🎙️ GroupCallFile created successfully"
-        )
-
-    except Exception:
-
-        logger.error(
-            "❌ Failed to initialize GroupCallFactory",
-            exc_info=True,
-        )
-
-        group_call = None
-
-else:
 
     logger.info(
-        "ℹ️ GroupCall unavailable."
+        "🧪 Telegram update handler registered"
     )
 
-
-# --------------------------------------------------------
-# MUSIC PLAYER
-# --------------------------------------------------------
-
-player = MusicPlayer(group_call)
-
-logger.info(
-    "🎵 MusicPlayer initialized"
-)
     # --------------------------------------------------------
-    # CREATE GROUP CALL AFTER EVENT LOOP IS RUNNING
+    # START PYROGRAM
     # --------------------------------------------------------
+
+    await app.start()
+
+    logger.info(
+        "✅ Pyrogram client started"
+    )
+
+    # --------------------------------------------------------
+    # BOT INFORMATION
+    # --------------------------------------------------------
+
+    me = await app.get_me()
+
+    logger.info(
+        f"🤖 Bot: @{me.username} ({me.first_name})"
+    )
+
+    # --------------------------------------------------------
+    # GROUP CALL
+    # IMPORTANT:
+    # Create GroupCall AFTER Pyrogram has started.
+    # --------------------------------------------------------
+
     if VOICE_CHAT_AVAILABLE:
+
         try:
+
             from pytgcalls import GroupCallFactory
+
             group_call = (
                 GroupCallFactory(app)
                 .get_file_group_call(
@@ -277,30 +266,34 @@ logger.info(
             )
 
         except Exception:
+
             logger.error(
                 "❌ Failed to initialize GroupCallFactory",
-                exc_info=True
+                exc_info=True,
             )
 
             group_call = None
+
     else:
+
         logger.info(
             "ℹ️ GroupCall unavailable."
         )
+
     # --------------------------------------------------------
-    # CREATE PLAYER AFTER GROUP CALL
+    # MUSIC PLAYER
     # --------------------------------------------------------
+
     player = MusicPlayer(group_call)
-    # --------------------------------------------------------
-    # BOT INFORMATION
-    # --------------------------------------------------------
-    me = await app.get_me()
+
     logger.info(
-        f"🤖 Bot: @{me.username} ({me.first_name})"
+        "🎵 MusicPlayer initialized"
     )
+
     # --------------------------------------------------------
-    # REGISTER HANDLERS
+    # REGISTER BOT HANDLERS
     # --------------------------------------------------------
+
     set_bot_instances(
         app,
         group_call,
@@ -308,75 +301,113 @@ logger.info(
         shutdown_event,
     )
 
-    logger.info("✅ Handlers registered")
+    logger.info(
+        "✅ Handlers registered"
+    )
+
+    # --------------------------------------------------------
+    # ADMIN INFO
+    # --------------------------------------------------------
+
+    logger.info(
+        "📋 Admin IDs: "
+        f"{config.admin_ids if config.admin_ids else 'All users'}"
+    )
+
     # --------------------------------------------------------
     # HEALTH SERVER
     # --------------------------------------------------------
+
     _health_runner = await health_server()
-    logger.info("🎵 Bot is ready!")
-    logger.info(
-        "🎵 Send /start to the bot or /play <song> in a group."
-    )
-    logger.info("✅ Bot is now running.")
+
     # --------------------------------------------------------
     # READY
     # --------------------------------------------------------
+
     logger.info(
         "🎵 Bot is ready!"
     )
+
     logger.info(
         "🎵 Send /start to the bot or /play <song> in a group."
     )
+
     logger.info(
         "✅ Bot is now running."
     )
+
+
 # ============================================================
 # SHUTDOWN
 # ============================================================
+
 async def shutdown():
+
     global _shutdown_started
     global _health_runner
+
     if _shutdown_started:
+
         logger.info(
             "ℹ️ Shutdown already in progress."
         )
+
         return
+
     _shutdown_started = True
+
     logger.info(
         "🛑 Shutting down..."
     )
+
     # --------------------------------------------------------
     # HEALTH SERVER
     # --------------------------------------------------------
+
     try:
+
         if _health_runner:
+
             await _health_runner.cleanup()
+
             _health_runner = None
+
             logger.info(
                 "✅ Health server stopped"
             )
+
     except Exception as e:
 
         logger.warning(
             f"Error stopping health server: {e}"
         )
+
     # --------------------------------------------------------
     # GROUP CALL
     # --------------------------------------------------------
+
     try:
+
         if group_call:
+
             await group_call.stop()
+
             logger.info(
                 "✅ GroupCall stopped"
             )
+
     except Exception as e:
+
         logger.warning(
             f"Error stopping GroupCall: {e}"
         )
+
     # --------------------------------------------------------
     # PYROGRAM
     # --------------------------------------------------------
+
     try:
+
         if app.is_connected:
 
             await app.stop()
