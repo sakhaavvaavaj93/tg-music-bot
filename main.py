@@ -2,8 +2,14 @@
 """
 Telegram Music Bot - Main Entry Point
 
-PyTgCalls 3.0.0.dev24 compatible version.
-Uses GroupCallFactory / GroupCallFile API.
+Compatible with:
+    Pyrogram 2.0.106
+    pytgcalls 3.0.0.dev24
+    tgcalls 3.0.0.dev6
+
+Uses:
+    GroupCallFactory
+    GroupCallFile
 """
 
 import asyncio
@@ -15,6 +21,7 @@ import importlib.util
 from pathlib import Path
 
 from aiohttp import web
+
 
 # ============================================================
 # PROJECT PATH
@@ -31,8 +38,16 @@ from config import config, validate_config
 from database import db
 from player import downloader, MusicPlayer
 
-print("🚨🚨🚨 MAIN.PY DEV24 VERSION IS RUNNING 🚨🚨🚨", flush=True)
-print("🚨 MAIN FILE:", __file__, flush=True)
+print(
+    "🚨🚨🚨 MAIN.PY DEV24 VERSION IS RUNNING 🚨🚨🚨",
+    flush=True
+)
+
+print(
+    "🚨 MAIN FILE:",
+    __file__,
+    flush=True
+)
 
 spec = importlib.util.find_spec("optional_deps")
 
@@ -46,7 +61,7 @@ print(
 from optional_deps import (
     VOICE_CHAT_AVAILABLE,
     check_voice_chat_support,
-    get_platform_info
+    get_platform_info,
 )
 
 from handlers import set_bot_instances
@@ -66,8 +81,8 @@ logging.basicConfig(
     format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler(config.log_file),
-        logging.StreamHandler(sys.stdout)
-    ]
+        logging.StreamHandler(sys.stdout),
+    ],
 )
 
 logger = logging.getLogger(__name__)
@@ -88,7 +103,7 @@ logger.info("=====================")
 
 
 # ============================================================
-# CONFIGURATION VALIDATION
+# CONFIGURATION
 # ============================================================
 
 errors = validate_config()
@@ -111,7 +126,9 @@ voice_supported, voice_msg = check_voice_chat_support()
 
 if VOICE_CHAT_AVAILABLE:
 
-    logger.info("✅ Voice chat: AVAILABLE")
+    logger.info(
+        "✅ Voice chat: AVAILABLE"
+    )
 
 else:
 
@@ -128,7 +145,7 @@ app = Client(
     config.session_name,
     api_id=config.api_id,
     api_hash=config.api_hash,
-    bot_token=config.bot_token
+    bot_token=config.bot_token,
 )
 
 
@@ -142,18 +159,30 @@ if VOICE_CHAT_AVAILABLE:
 
     try:
 
-        # PyTgCalls dev24 API
         from pytgcalls import GroupCallFactory
+
+        # IMPORTANT:
+        # play_on_repeat MUST be False.
+        #
+        # Otherwise GroupCallFile can keep replaying the
+        # same input file instead of notifying our queue
+        # handler that playback ended.
 
         group_call = GroupCallFactory(
             app
-        ).get_file_group_call()
+        ).get_file_group_call(
+            play_on_repeat=False
+        )
 
         logger.info(
             "✅ GroupCallFactory initialized successfully"
         )
 
-    except Exception as e:
+        logger.info(
+            "🎙️ GroupCallFile created successfully"
+        )
+
+    except Exception:
 
         logger.error(
             "❌ Failed to initialize GroupCallFactory",
@@ -181,6 +210,8 @@ player = MusicPlayer(group_call)
 # ============================================================
 
 shutdown_event = asyncio.Event()
+
+_shutdown_started = False
 
 
 # ============================================================
@@ -225,6 +256,8 @@ async def health_server():
         f"🌐 Health server started on port {port}"
     )
 
+    return runner
+
 
 # ============================================================
 # STARTUP
@@ -236,7 +269,6 @@ async def startup():
         "🚀 Starting Telegram Music Bot..."
     )
 
-
     # --------------------------------------------------------
     # DATABASE
     # --------------------------------------------------------
@@ -246,7 +278,6 @@ async def startup():
     logger.info(
         "✅ Database initialized"
     )
-
 
     # --------------------------------------------------------
     # PYROGRAM
@@ -258,46 +289,40 @@ async def startup():
         "✅ Pyrogram client started"
     )
 
-
     # --------------------------------------------------------
     # GROUP CALL
     # --------------------------------------------------------
 
     if group_call:
 
-        try:
+        logger.info(
+            "🎙️ GroupCallFile ready."
+        )
 
-            await group_call.start()
-
-            logger.info(
-                "✅ GroupCall started"
-            )
-
-        except Exception as e:
-
-            logger.error(
-                "❌ GroupCall start failed",
-                exc_info=True
-            )
+        logger.info(
+            "🎙️ It will join a Voice Chat when /play is used."
+        )
 
     else:
 
         logger.info(
-            "ℹ️ GroupCall skipped"
+            "ℹ️ GroupCall unavailable."
         )
 
-
     # --------------------------------------------------------
-    # REGISTER BOT INSTANCES
+    # REGISTER HANDLERS
     # --------------------------------------------------------
 
     set_bot_instances(
         app,
         group_call,
         player,
-        shutdown_event
+        shutdown_event,
     )
 
+    logger.info(
+        "✅ Handlers registered"
+    )
 
     # --------------------------------------------------------
     # BOT INFORMATION
@@ -310,10 +335,9 @@ async def startup():
     )
 
     logger.info(
-        f"📋 Admin IDs: "
+        "📋 Admin IDs: "
         f"{config.admin_ids if config.admin_ids else 'All users'}"
     )
-
 
     # --------------------------------------------------------
     # READY
@@ -326,7 +350,7 @@ async def startup():
         )
 
         logger.info(
-            "🎵 Send /play <song> in a group to start."
+            "🎵 Send /play <song> in a group."
         )
 
     else:
@@ -342,12 +366,19 @@ async def startup():
 
 async def shutdown():
 
+    global _shutdown_started
+
+    # Prevent shutdown from running twice.
+    if _shutdown_started:
+        return
+
+    _shutdown_started = True
+
     logger.info(
         "🛑 Shutting down..."
     )
 
     shutdown_event.set()
-
 
     # --------------------------------------------------------
     # STOP GROUP CALL
@@ -369,7 +400,6 @@ async def shutdown():
             f"Error stopping GroupCall: {e}"
         )
 
-
     # --------------------------------------------------------
     # STOP PYROGRAM
     # --------------------------------------------------------
@@ -390,7 +420,6 @@ async def shutdown():
             f"Error stopping Pyrogram: {e}"
         )
 
-
     logger.info(
         "✅ Shutdown complete"
     )
@@ -400,22 +429,27 @@ async def shutdown():
 # SIGNAL HANDLER
 # ============================================================
 
-def signal_handler(
-    signum,
-    frame
-):
+def signal_handler(signum, frame):
 
     logger.info(
         f"Received signal {signum}"
     )
 
+    # IMPORTANT:
+    # Do NOT call asyncio.create_task(shutdown()) here.
+    #
+    # The previous version could cause shutdown to execute
+    # twice and contributed to:
+    #
+    # "Future attached to a different loop"
+    #
+    # We only signal the main coroutine here.
+
     try:
 
-        asyncio.create_task(
-            shutdown()
-        )
+        shutdown_event.set()
 
-    except RuntimeError:
+    except Exception:
 
         pass
 
@@ -426,8 +460,7 @@ def signal_handler(
 
 async def main():
 
-    loop = asyncio.get_event_loop()
-
+    loop = asyncio.get_running_loop()
 
     # --------------------------------------------------------
     # SIGNALS
@@ -435,7 +468,7 @@ async def main():
 
     for sig in (
         signal.SIGTERM,
-        signal.SIGINT
+        signal.SIGINT,
     ):
 
         try:
@@ -444,13 +477,12 @@ async def main():
                 sig,
                 signal_handler,
                 sig,
-                None
+                None,
             )
 
-        except NotImplementedError:
+        except (NotImplementedError, RuntimeError):
 
             pass
-
 
     # --------------------------------------------------------
     # START
@@ -466,16 +498,23 @@ async def main():
             "✅ Bot is now running."
         )
 
+        # Wait until Render sends SIGTERM
+        # or another shutdown event occurs.
+
         await shutdown_event.wait()
 
+    except asyncio.CancelledError:
+
+        logger.info(
+            "Main task cancelled."
+        )
 
     except Exception as e:
 
         logger.error(
             f"❌ Fatal error: {e}",
-            exc_info=True
+            exc_info=True,
         )
-
 
     finally:
 
@@ -500,7 +539,7 @@ if __name__ == "__main__":
 
         logger.error(
             f"❌ Fatal error: {e}",
-            exc_info=True
+            exc_info=True,
         )
 
         sys.exit(1)
