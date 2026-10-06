@@ -38,6 +38,7 @@ logger = logging.getLogger(__name__)
 
 PREFIX = config.command_prefix
 
+
 # ============================================================
 # GLOBAL INSTANCES
 # ============================================================
@@ -51,7 +52,6 @@ player: Optional[MusicPlayer] = None
 shutdown_event: Optional[asyncio.Event] = None
 
 _handlers_registered = False
-
 
 # ============================================================
 # INITIALIZATION
@@ -83,6 +83,58 @@ def set_bot_instances(
         VOICE_CHAT_AVAILABLE,
         type(group_call).__name__ if group_call else None,
     )
+
+    # DEBUG: check whether Telegram updates reach Pyrogram
+    @app.on_message(filters.all)
+    async def debug_all_messages(client, message):
+        logger.info(
+            "🚨 UPDATE RECEIVED | "
+            f"type={message.__class__.__name__} | "
+            f"chat_id={message.chat.id if message.chat else None} | "
+            f"text={message.text!r}"
+        )
+
+    logger.info("🧪 Telegram debug handler registered")
+
+    if not _handlers_registered:
+        _register_handlers()
+        _handlers_registered = True
+        logger.info("✅ Telegram handlers registered")
+        
+def set_bot_instances(
+    app_instance: Client,
+    pytgcalls_instance,
+    player_instance: MusicPlayer,
+    shutdown_evt: asyncio.Event,
+):
+    global app
+    global group_call
+    global player
+    global shutdown_event
+    global _handlers_registered
+
+    app = app_instance
+    group_call = pytgcalls_instance
+    player = player_instance
+    shutdown_event = shutdown_evt
+
+    logger.info(
+        "🔧 Handlers initialized | voice=%s | group_call=%s",
+        VOICE_CHAT_AVAILABLE,
+        type(group_call).__name__ if group_call else None,
+    )
+
+    # DEBUG: check whether Telegram updates reach Pyrogram
+    @app.on_message(filters.all)
+    async def debug_all_messages(client, message):
+        logger.info(
+            "🚨 UPDATE RECEIVED | "
+            f"type={message.__class__.__name__} | "
+            f"chat_id={message.chat.id if message.chat else None} | "
+            f"text={message.text!r}"
+        )
+
+    logger.info("🧪 Telegram debug handler registered")
 
     if not _handlers_registered:
         _register_handlers()
