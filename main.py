@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """
 Telegram Music Bot - Main Entry Point
-A self-bot for playing music in Telegram group voice calls.
-Gracefully handles environments where PyTgCalls is not available.
+
+PyTgCalls 3.0.0.dev24 compatible version.
+Uses GroupCallFactory / GroupCallFile API.
 """
 
 import asyncio
@@ -10,46 +11,59 @@ import logging
 import sys
 import signal
 import os
+import importlib.util
 from pathlib import Path
 
 from aiohttp import web
 
-# Add project root to path
+# ============================================================
+# PROJECT PATH
+# ============================================================
+
 sys.path.insert(0, str(Path(__file__).parent))
+
+
+# ============================================================
+# IMPORTS
+# ============================================================
 
 from config import config, validate_config
 from database import db
 from player import downloader, MusicPlayer
 
-# 🔍 Render deployment diagnostic
-import importlib.util
-
-print("🚨🚨🚨 MAIN.PY NEW CODE IS RUNNING 🚨🚨🚨", flush=True)
+print("🚨🚨🚨 MAIN.PY DEV24 VERSION IS RUNNING 🚨🚨🚨", flush=True)
 print("🚨 MAIN FILE:", __file__, flush=True)
 
 spec = importlib.util.find_spec("optional_deps")
+
 print(
     "🚨 OPTIONAL_DEPS FILE:",
     spec.origin if spec else "NOT FOUND",
     flush=True
 )
 
+
 from optional_deps import (
     VOICE_CHAT_AVAILABLE,
-    PyTgCalls,
     check_voice_chat_support,
     get_platform_info
 )
 
 from handlers import set_bot_instances
 from pyrogram import Client
+
+
 # ============================================================
 # LOGGING
 # ============================================================
 
 logging.basicConfig(
-    level=getattr(logging, config.log_level.upper(), logging.INFO),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
+    level=getattr(
+        logging,
+        config.log_level.upper(),
+        logging.INFO
+    ),
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
     handlers=[
         logging.FileHandler(config.log_file),
         logging.StreamHandler(sys.stdout)
@@ -71,6 +85,8 @@ for key, value in platform_info.items():
     logger.info(f"  {key}: {value}")
 
 logger.info("=====================")
+
+
 # ============================================================
 # CONFIGURATION VALIDATION
 # ============================================================
@@ -78,6 +94,7 @@ logger.info("=====================")
 errors = validate_config()
 
 if errors:
+
     logger.error("Configuration errors:")
 
     for error in errors:
@@ -93,8 +110,11 @@ if errors:
 voice_supported, voice_msg = check_voice_chat_support()
 
 if VOICE_CHAT_AVAILABLE:
+
     logger.info("✅ Voice chat: AVAILABLE")
+
 else:
+
     logger.warning(
         f"⚠️ Voice chat: NOT AVAILABLE - {voice_msg}"
     )
@@ -113,20 +133,47 @@ app = Client(
 
 
 # ============================================================
-# PYTGCalls
+# GROUP CALL
 # ============================================================
 
-pytgcalls = None
+group_call = None
 
 if VOICE_CHAT_AVAILABLE:
-    pytgcalls = PyTgCalls(app)
+
+    try:
+
+        # PyTgCalls dev24 API
+        from pytgcalls import GroupCallFactory
+
+        group_call = GroupCallFactory(
+            app
+        ).get_file_group_call()
+
+        logger.info(
+            "✅ GroupCallFactory initialized successfully"
+        )
+
+    except Exception as e:
+
+        logger.error(
+            "❌ Failed to initialize GroupCallFactory",
+            exc_info=True
+        )
+
+        group_call = None
+
+else:
+
+    logger.info(
+        "ℹ️ GroupCall skipped - voice chat unavailable"
+    )
 
 
 # ============================================================
 # MUSIC PLAYER
 # ============================================================
 
-player = MusicPlayer(pytgcalls)
+player = MusicPlayer(group_call)
 
 
 # ============================================================
@@ -141,23 +188,26 @@ shutdown_event = asyncio.Event()
 # ============================================================
 
 async def health_server():
-    """
-    Small HTTP server required by Render Web Service.
-    Render checks this port to determine whether the service is alive.
-    """
 
     async def health(request):
+
         return web.Response(
             text="Telegram Music Bot is running"
         )
 
     web_app = web.Application()
 
-    web_app.router.add_get("/", health)
+    web_app.router.add_get(
+        "/",
+        health
+    )
 
-    # Render provides PORT automatically.
-    # 10000 is used as fallback for local testing.
-    port = int(os.environ.get("PORT", 10000))
+    port = int(
+        os.environ.get(
+            "PORT",
+            10000
+        )
+    )
 
     runner = web.AppRunner(web_app)
 
@@ -181,14 +231,14 @@ async def health_server():
 # ============================================================
 
 async def startup():
-    """Initialize database and start clients."""
 
     logger.info(
         "🚀 Starting Telegram Music Bot..."
     )
 
+
     # --------------------------------------------------------
-    # Database
+    # DATABASE
     # --------------------------------------------------------
 
     await db.init()
@@ -197,8 +247,9 @@ async def startup():
         "✅ Database initialized"
     )
 
+
     # --------------------------------------------------------
-    # Pyrogram
+    # PYROGRAM
     # --------------------------------------------------------
 
     await app.start()
@@ -207,38 +258,49 @@ async def startup():
         "✅ Pyrogram client started"
     )
 
+
     # --------------------------------------------------------
-    # PyTgCalls
+    # GROUP CALL
     # --------------------------------------------------------
 
-    if pytgcalls:
+    if group_call:
 
-        await pytgcalls.start()
+        try:
 
-        logger.info(
-            "✅ PyTgCalls started"
-        )
+            await group_call.start()
+
+            logger.info(
+                "✅ GroupCall started"
+            )
+
+        except Exception as e:
+
+            logger.error(
+                "❌ GroupCall start failed",
+                exc_info=True
+            )
 
     else:
 
         logger.info(
-            "ℹ️ PyTgCalls skipped "
-            "(not available on this platform)"
+            "ℹ️ GroupCall skipped"
         )
 
+
     # --------------------------------------------------------
-    # Register bot instances
+    # REGISTER BOT INSTANCES
     # --------------------------------------------------------
 
     set_bot_instances(
         app,
-        pytgcalls,
+        group_call,
         player,
         shutdown_event
     )
 
+
     # --------------------------------------------------------
-    # Get bot information
+    # BOT INFORMATION
     # --------------------------------------------------------
 
     me = await app.get_me()
@@ -252,23 +314,25 @@ async def startup():
         f"{config.admin_ids if config.admin_ids else 'All users'}"
     )
 
+
     # --------------------------------------------------------
-    # Ready message
+    # READY
     # --------------------------------------------------------
 
-    if VOICE_CHAT_AVAILABLE:
+    if group_call:
 
         logger.info(
-            "🎵 Bot is ready! "
-            "Send /play <song> in a group to start."
+            "🎵 Bot is ready!"
+        )
+
+        logger.info(
+            "🎵 Send /play <song> in a group to start."
         )
 
     else:
 
         logger.info(
-            "🎵 Bot is ready "
-            "(LIMITED MODE - no voice chat). "
-            "Send /play <song> to download music."
+            "🎵 Bot is running in limited mode."
         )
 
 
@@ -277,7 +341,6 @@ async def startup():
 # ============================================================
 
 async def shutdown():
-    """Graceful shutdown."""
 
     logger.info(
         "🛑 Shutting down..."
@@ -285,40 +348,30 @@ async def shutdown():
 
     shutdown_event.set()
 
-    # --------------------------------------------------------
-    # Leave active voice calls
-    # --------------------------------------------------------
-
-    try:
-
-        if pytgcalls:
-
-            await pytgcalls.leave_all_calls()
-
-    except Exception as e:
-
-        logger.warning(
-            f"Error leaving calls: {e}"
-        )
 
     # --------------------------------------------------------
-    # Stop PyTgCalls
+    # STOP GROUP CALL
     # --------------------------------------------------------
 
     try:
 
-        if pytgcalls:
+        if group_call:
 
-            await pytgcalls.stop()
+            await group_call.stop()
+
+            logger.info(
+                "✅ GroupCall stopped"
+            )
 
     except Exception as e:
 
         logger.warning(
-            f"Error stopping PyTgCalls: {e}"
+            f"Error stopping GroupCall: {e}"
         )
 
+
     # --------------------------------------------------------
-    # Stop Pyrogram
+    # STOP PYROGRAM
     # --------------------------------------------------------
 
     try:
@@ -327,11 +380,16 @@ async def shutdown():
 
             await app.stop()
 
+            logger.info(
+                "✅ Pyrogram stopped"
+            )
+
     except Exception as e:
 
         logger.warning(
             f"Error stopping Pyrogram: {e}"
         )
+
 
     logger.info(
         "✅ Shutdown complete"
@@ -342,7 +400,10 @@ async def shutdown():
 # SIGNAL HANDLER
 # ============================================================
 
-def signal_handler(signum, frame):
+def signal_handler(
+    signum,
+    frame
+):
 
     logger.info(
         f"Received signal {signum}"
@@ -365,11 +426,12 @@ def signal_handler(signum, frame):
 
 async def main():
 
-    # --------------------------------------------------------
-    # Register shutdown signals
-    # --------------------------------------------------------
-
     loop = asyncio.get_event_loop()
+
+
+    # --------------------------------------------------------
+    # SIGNALS
+    # --------------------------------------------------------
 
     for sig in (
         signal.SIGTERM,
@@ -387,29 +449,25 @@ async def main():
 
         except NotImplementedError:
 
-            # Windows doesn't support
-            # add_signal_handler
             pass
 
+
     # --------------------------------------------------------
-    # Start bot
+    # START
     # --------------------------------------------------------
 
     try:
 
         await startup()
 
-        # ----------------------------------------------------
-        # Start Render HTTP health server
-        # ----------------------------------------------------
-
         await health_server()
 
-        # ----------------------------------------------------
-        # Keep bot running
-        # ----------------------------------------------------
+        logger.info(
+            "✅ Bot is now running."
+        )
 
         await shutdown_event.wait()
+
 
     except Exception as e:
 
@@ -417,6 +475,7 @@ async def main():
             f"❌ Fatal error: {e}",
             exc_info=True
         )
+
 
     finally:
 
