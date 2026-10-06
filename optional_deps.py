@@ -79,12 +79,22 @@ if VOICE_CHAT_AVAILABLE:
         NoActiveGroupCall = _NoActiveGroupCall
         GroupCallNotFound = _GroupCallNotFound
 
+        print("✅ PyTgCalls imported successfully!", flush=True)
+
     except Exception as e:
-        print("❌ PyTgCalls import failed!")
-        print("❌ Error type:", type(e).__name__)
-        print("❌ Error:", repr(e))
+        print("=" * 60, flush=True)
+        print("❌ PYTGCalls IMPORT FAILED", flush=True)
+        print("❌ Error type:", type(e).__name__, flush=True)
+        print("❌ Error:", repr(e), flush=True)
+        print("❌ Platform:", platform.platform(), flush=True)
+        print("❌ Python:", sys.version, flush=True)
+        print("=" * 60, flush=True)
+
+        import traceback
+        traceback.print_exc()
 
         VOICE_CHAT_AVAILABLE = False
+
         _missing = _DummyType("pytgcalls", e)
 
         PyTgCalls = _missing
@@ -94,8 +104,17 @@ if VOICE_CHAT_AVAILABLE:
         NoActiveGroupCall = _missing
         GroupCallNotFound = _missing
 
-print("🔍 DEBUG 2 - Final VOICE_CHAT_AVAILABLE:", VOICE_CHAT_AVAILABLE)
-print("🔍 DEBUG 3 - PyTgCalls object:", PyTgCalls)
+print(
+    "🔍 DEBUG 2 - Final VOICE_CHAT_AVAILABLE:",
+    VOICE_CHAT_AVAILABLE,
+    flush=True
+)
+
+print(
+    "🔍 DEBUG 3 - PyTgCalls object:",
+    PyTgCalls,
+    flush=True
+)
 
 # Try to import psutil (optional, for system stats)      
 psutil = None
