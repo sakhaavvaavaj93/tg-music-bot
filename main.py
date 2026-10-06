@@ -222,6 +222,7 @@ async def health_server():
 # STARTUP
 # ============================================================
 
+```python
 async def startup():
 
     global _health_runner
@@ -241,17 +242,8 @@ async def startup():
     )
 
     # --------------------------------------------------------
-    # PYROGRAM
-    # --------------------------------------------------------
-
-    await app.start()
-
-    logger.info(
-        "✅ Pyrogram client started"
-    )
-
-    # --------------------------------------------------------
     # TEMPORARY TELEGRAM UPDATE TEST
+    # IMPORTANT: register BEFORE app.start()
     # --------------------------------------------------------
 
     @app.on_message()
@@ -264,7 +256,27 @@ async def startup():
         )
 
     logger.info(
-        "🧪 Telegram debug update handler installed"
+        "🧪 Telegram debug update handler registered"
+    )
+
+    # --------------------------------------------------------
+    # PYROGRAM
+    # --------------------------------------------------------
+
+    await app.start()
+
+    logger.info(
+        "✅ Pyrogram client started"
+    )
+
+    # --------------------------------------------------------
+    # BOT INFORMATION
+    # --------------------------------------------------------
+
+    me = await app.get_me()
+
+    logger.info(
+        f"🤖 Bot: @{me.username} ({me.first_name})"
     )
 
     # --------------------------------------------------------
@@ -303,14 +315,8 @@ async def startup():
     )
 
     # --------------------------------------------------------
-    # BOT INFORMATION
+    # ADMIN INFORMATION
     # --------------------------------------------------------
-
-    me = await app.get_me()
-
-    logger.info(
-        f"🤖 Bot: @{me.username} ({me.first_name})"
-    )
 
     logger.info(
         "📋 Admin IDs: "
@@ -338,7 +344,7 @@ async def startup():
     logger.info(
         "✅ Bot is now running."
     )
-
+```
 
 # ============================================================
 # SHUTDOWN
